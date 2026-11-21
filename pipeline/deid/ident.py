@@ -71,7 +71,7 @@ def add_email(reg: Registry, local: str, domain: str, source: str):
         return
     d = domain.lower()
     sub, rd = split_domain(d)
-    if rd in PUBLIC_DOMAINS or d in PUBLIC_DOMAINS:
+    if rd in PUBLIC_DOMAINS or d in PUBLIC_DOMAINS or len(rd) < 6:
         dpseudo = domain
     else:
         dp = reg.pseudonym(rd, "domain", source)
@@ -87,12 +87,34 @@ def add_email(reg: Registry, local: str, domain: str, source: str):
         reg.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (full, "email", p, source, "all"))
 
 
+_OK_CHARS = re.compile(r"^[A-Za-z0-9\u00c0-\u024f .,'_@&()/+:\\-]+$")
+
+
+def plausible(kind: str, v: str) -> bool:
+    """Reject garbage (decoded binary, control characters, symbol soup)."""
+    if not _OK_CHARS.match(v):
+        return False
+    if kind in ("person", "author", "company", "org", "account", "project") and len(v) < 5:
+        return False
+    letters = sum(c.isalpha() for c in v)
+    if letters < max(2, len(v) * 0.5) and kind in ("person", "author", "company", "org", "account", "project"):
+        return False
+    if kind in ("person", "author", "company", "org"):
+        if not re.search(r"[aeiouyAEIOUY\u00c0-\u00ff]", v):
+            return False
+        # random mixed case inside a single token (aBcDeF) is almost never a name
+        for tkn in v.split():
+            if len(tkn) > 3 and len(re.findall(r"[a-z][A-Z]", tkn)) >= 2 and not re.match(r"^(Mc|Mac)", tkn):
+                return False
+    return True
+
+
 def register_candidates(reg: Registry, cands: list[tuple], source: str = ""):
     """cands: (kind_hint, value[, extra]) tuples produced by harvesters. Applies all guards."""
     for c in cands:
         kind, v = c[0], c[1]
         v = v.strip().strip("'\"").strip()
-        if not v or len(v) < 3 or len(v) > 90:
+        if not v or len(v) < 3 or len(v) > 90 or not plausible(kind, v):
             continue
         if kind == "email":
             local, _, dom = v.partition("@")

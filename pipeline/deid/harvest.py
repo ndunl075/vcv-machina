@@ -190,10 +190,33 @@ def dxf_candidates(txt: str, out: list):
             out.append(("person", v))
 
 
+_RUN8 = re.compile(rb"[\x20-\x7e\t]{6,}")
+_RUN16 = re.compile(rb"(?:[\x20-\x7e]\x00){6,}")
+
+
+def printable_runs(w: bytes) -> str:
+    """Only readable strings (ASCII and UTF-16LE runs) of a binary blob, so compressed data never yields garbage names."""
+    parts = [m.group(0).decode("ascii") for m in _RUN8.finditer(w)]
+    parts += [m.group(0).decode("utf-16le") for m in _RUN16.finditer(w)]
+    return "\n".join(parts)
+
+
+def looks_texty(w: bytes) -> bool:
+    s = w[:65536]
+    if not s:
+        return True
+    good = sum(1 for b in s if 32 <= b < 127 or b in (9, 10, 13))
+    return good / len(s) > 0.88
+
+
 def raw_candidates(name: str, data: bytes, out: list):
     low = name.lower()
-    w = _window(data)
-    txt = _text(w)
+    if len(data) > (1 << 20) and not looks_texty(data):
+        w = data[: 1 << 18] + b"\n" + data[-TAIL:]
+    else:
+        w = _window(data)
+    texty = looks_texty(w)
+    txt = _text(w) if texty else printable_runs(w)
     ext = low.rsplit(".", 1)[-1] if "." in low else ""
     if ext in ("step", "stp", "p21", "stpz"):
         step_candidates(txt, out)
@@ -208,12 +231,6 @@ def raw_candidates(name: str, data: bytes, out: list):
     elif ext == "model" or name.endswith("3D/3dmodel.model"):
         threemf_candidates(txt, out)
     generic_text_candidates(txt, out)
-    # UTF-16LE strings (OLE / Windows metadata)
-    if b"@\x00" in w or b"C\x00o\x00p\x00y\x00" in w or b"\\\x00U\x00s\x00e\x00r\x00s" in w:
-        t16 = w.decode("utf-16le", "ignore")
-        generic_text_candidates(t16, out)
-        t16b = w[1:].decode("utf-16le", "ignore")
-        generic_text_candidates(t16b, out)
 
 
 def ole_candidates(path_or_bytes, out: list):
@@ -241,7 +258,10 @@ def ole_candidates(path_or_bytes, out: list):
             for attr, kind in (("author", "person"), ("last_saved_by", "person"), ("company", "org"), ("manager", "person")):
                 v = dec(getattr(md, attr, None))
                 if v:
-                    out.append((kind, v.strip("\x00")))
+                    if kind == "person":
+                        winuser(v.strip("\x00"), out)
+                    else:
+                        out.append((kind, v.strip("\x00")))
             for attr in ("title", "subject", "comments", "keywords", "category", "revision_number"):
                 v = dec(getattr(md, attr, None))
                 if v:
@@ -253,12 +273,25 @@ def ole_candidates(path_or_bytes, out: list):
                     d = ole.openstream(sp).read(2_000_000)
                 except Exception:
                     continue
-                generic_text_candidates(d.decode("latin-1"), out)
-                if b"\x00" in d[:200]:
-                    generic_text_candidates(d.decode("utf-16le", "ignore"), out)
+                generic_text_candidates(printable_runs(d), out)
     finally:
         ole.close()
     return True
+
+
+_WINUSER = re.compile(r"^([A-Za-z0-9_.-]{2,30})\\([A-Za-z0-9._-]{2,40})(?:\s*\(([^)]{2,40})\))?$")
+
+
+def winuser(s: str, out: list):
+    """'DOMAIN\\user (HOST)' style author strings -> network domain, account, machine name; otherwise a person."""
+    m = _WINUSER.match(s.strip())
+    if m:
+        out.append(("org", m.group(1)))
+        out.append(("account", m.group(2)))
+        if m.group(3):
+            out.append(("account", m.group(3)))
+    else:
+        out.append(("person", s))
 
 
 def pdf_candidates(data: bytes, out: list):
@@ -276,7 +309,7 @@ def pdf_candidates(data: bytes, out: list):
                 continue
             kn = str(k)
             if kn in ("/Author", "/Manager"):
-                out.append(("person", s))
+                winuser(s, out)
             elif kn in ("/Company", "/Organization", "/Organisation"):
                 out.append(("org", s))
             elif kn in ("/Title", "/Subject", "/Keywords", "/Creator", "/Producer"):

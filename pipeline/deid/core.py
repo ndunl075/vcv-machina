@@ -85,10 +85,11 @@ class Engine:
     """Loaded read-only registry + matchers; one per worker process."""
     def __init__(self):
         self.reg = Registry(REGDB, get_seed(), readonly=True)
-        allp = [(o, p) for o, _k, p in self.reg.items("path")]
+        # content identities (scope "all") are replaced everywhere, in paths too; "path"-scope identities (generic-looking owner/repo
+        # names such as a repo called "models") are only replaced as the whole <owner>__<repo> root folder, never inside other paths
         content = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "all"]
-        self.pm = Matcher(allp, min_len=3, boundary_len=7)
-        self.cm = Matcher(content, min_len=4, boundary_len=7)
+        self.pm = Matcher(content, min_len=4)
+        self.cm = Matcher(content, min_len=4)
         self.ctx_notes: list = []
         self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes)
 

@@ -289,6 +289,8 @@ class Registry:
     def pseudonym(self, original: str, kind: str = "other", source: str = "", scope: str = "all") -> str:
         """Return the pseudonym for original, creating it (collision-free) when this registry is writable."""
         key = norm_key(original)
+        if not key:
+            return original
         hit = self.map.get(key)
         if hit:
             if scope == "all" and self.scope.get(key) == "path" and not self.readonly:
@@ -308,8 +310,9 @@ class Registry:
                 if p.lower() not in self.used and p.lower() != key.lower() and p.lower() not in self._originals_lower:
                     break
                 probe += 1
-                if probe > 400:
-                    raise RuntimeError(f"cannot find free pseudonym for kind={kind} len={len(key)}")
+                if probe > 400:   # tiny identities have too few candidates: leave them alone (reported by verify)
+                    self.skipped = getattr(self, "skipped", 0) + 1
+                    return key
             self.map[key] = (kind, p)
             self.scope[key] = scope
             self.used.add(p.lower())

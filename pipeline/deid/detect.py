@@ -2,9 +2,11 @@
 from __future__ import annotations
 import re
 
-EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]{1,64})@((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w-])")
-TLDS = "com net org io de uk fr nl se ch eu us ca info dev edu gov co it es at be pl cz dk no fi jp cn kr au nz ru br in tw app xyz ai me".split()
-_TLD_ALT = "|".join(sorted(TLDS, key=len, reverse=True))
+TLDS = ("com net org io de uk fr nl se ch eu us ca info dev edu gov co it es at be pl cz dk no fi jp cn kr au nz ru br in tw app xyz ai me "
+        "biz mil int pt ie gr hu ro sk si hr rs bg ua lt lv ee is lu mt cy tr il ae sa eg za ng ke ma mx ar cl pe ve co.uk ac.uk com.au com.br "
+        "co.jp co.nz tech online store site cloud design engineering").split()
+_TLD_ALT = "|".join(sorted((re.escape(t) for t in TLDS), key=len, reverse=True))
+EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]{1,64})@((?:[A-Za-z0-9-]{1,63}\.)+(?:TLDS))(?![\w-])".replace("TLDS", _TLD_ALT), re.I)
 DOMAIN_RE = re.compile(r"(?<![\w@.-])((?:[A-Za-z0-9][A-Za-z0-9-]{0,62}\.)+(?:%s))(?![\w-])" % _TLD_ALT, re.I)
 URL_RE = re.compile(r"\b(?:https?|ftp)://[^\s'\"<>)\]]+", re.I)
 PHONE_RE = re.compile(r"(?i)\b(?:tel(?:ephone)?|phone|fax|mobile|mob|cell|gsm)\b\.?\s*[:=]?\s*(\+?\d[\d\s().\-/]{6,18}\d)")

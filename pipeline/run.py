@@ -4,6 +4,7 @@ Everything is resumable: per-file results live in WORK/ledger.sqlite and WORK/re
 import argparse, json, multiprocessing as mp, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deid import core, harvest, ident, rewrite
+from deid.pool import run_pool
 from deid.registry import Registry
 
 _eng = None
@@ -79,15 +80,21 @@ def cmd_harvest(a):
     todo = [r for r in rels if r not in done]
     print(f"harvest: {len(rels)} files, {len(todo)} to do", flush=True)
     t0 = time.time(); n = 0; nb = 0
-    with mp.Pool(a.procs, initializer=_init) as pool:
-        for rel, status, cands in pool.imap_unordered(_harvest_one, todo, chunksize=8):
-            cands = [c for c in cands if c[0] != "__attachment__"]
-            ident.register_candidates(reg, cands, source=os.path.splitext(rel)[1].lower())
-            con.execute("INSERT OR REPLACE INTO harvest VALUES(?,?,?)", (rel, status, len(cands)))
-            n += 1
-            if n % 500 == 0:
-                reg.commit(); con.commit()
-                print(f"  {n}/{len(todo)}  registry={len(reg.map)}  {n / (time.time() - t0):.1f} files/s", flush=True)
+    cnt = [0]
+
+    def on_res(res):
+        rel, status, cands = res
+        cands = [c for c in cands if c[0] != "__attachment__"]
+        ident.register_candidates(reg, cands, source=os.path.splitext(rel)[1].lower())
+        con.execute("INSERT OR REPLACE INTO harvest VALUES(?,?,?)", (rel, status, len(cands)))
+        cnt[0] += 1
+        if cnt[0] % 500 == 0:
+            reg.commit(); con.commit()
+            print(f"  {cnt[0]}/{len(todo)}  registry={len(reg.map)}  {cnt[0] / (time.time() - t0):.1f} files/s", flush=True)
+
+    def on_crash(rel):
+        con.execute("INSERT OR REPLACE INTO harvest VALUES(?,?,?)", (rel, "crashed", 0)); con.commit()
+    run_pool(_harvest_one, todo, a.procs, _init, on_res, on_crash, chunksize=8)
     reg.commit(); con.commit()
     print(f"harvest done: registry has {len(reg.map)} identities in {time.time() - t0:.0f}s")
 
@@ -121,14 +128,28 @@ def cmd_apply(a):
     todo = [r for r in rels if r not in done]
     print(f"apply: {len(rels)} files, {len(todo)} to do, registry {len(reg.map)} identities, version {ver}", flush=True)
     t0 = time.time(); n = 0; nbytes = 0
-    with mp.Pool(a.procs, initializer=_apply_init) as pool:
-        for rel, orel, handler, status, nrep, size, secs, note in pool.imap_unordered(_apply_one, todo, chunksize=4):
-            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)", (rel, orel, handler, status, nrep, size, secs, ver, note))
-            n += 1; nbytes += size
-            if n % 500 == 0:
-                con.commit()
-                el = time.time() - t0
-                print(f"  {n}/{len(todo)} {n / el:.1f} files/s {nbytes / el / 1e6 * 60 / 1000:.2f} GB/min", flush=True)
+    stats = [0, 0]
+
+    def on_res(res):
+        rel, orel, handler, status, nrep, size, secs, note = res
+        con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)", (rel, orel, handler, status, nrep, size, secs, ver, note))
+        stats[0] += 1; stats[1] += size
+        if stats[0] % 500 == 0:
+            con.commit()
+            el = time.time() - t0
+            print(f"  {stats[0]}/{len(todo)} {stats[0] / el:.1f} files/s {stats[1] / el * 60 / 1e9:.2f} GB/min", flush=True)
+
+    def on_crash(rel):   # a file that kills workers is cloned unchanged and listed
+        try:
+            eng = core.Engine()
+            orel = eng.out_rel(rel)
+            core.clone(os.path.join(core.INPUT, rel), os.path.join(core.OUT, orel))
+            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)", (rel, orel, "crash", "cloned-after-crash", 0, os.path.getsize(os.path.join(core.INPUT, rel)), 0, ver, "worker-crash"))
+            con.commit()
+        except Exception as e:
+            print("crash handler failed", rel, e, file=sys.stderr)
+    run_pool(_apply_one, todo, a.procs, _apply_init, on_res, on_crash, chunksize=4)
+    n, nbytes = stats
     con.commit()
     el = max(time.time() - t0, 1e-6)
     print(f"apply done: {n} files, {nbytes / 1e9:.2f} GB in {el:.0f}s = {n / el * 60:.0f} files/min, {nbytes / 1e9 / el * 60:.2f} GB/min")
@@ -175,12 +196,18 @@ def cmd_survey(a):
     todo = [r for r in rels if r not in done]
     print(f"survey: {len(todo)} files", flush=True)
     t0 = time.time(); n = 0
-    with mp.Pool(a.procs, initializer=_apply_init) as pool:
-        for rel, ext, kind, size, trace, cands, note in pool.imap_unordered(_survey_one, todo, chunksize=8):
-            con.execute("INSERT OR REPLACE INTO survey VALUES(?,?,?,?,?,?,?)", (rel, ext, kind, size, json.dumps(trace), json.dumps(cands), note))
-            n += 1
-            if n % 1000 == 0:
-                con.commit(); print(f"  {n}/{len(todo)} {n / (time.time() - t0):.1f}/s", flush=True)
+    cnt = [0]
+
+    def on_res(res):
+        rel, ext, kind, size, trace, cands, note = res
+        con.execute("INSERT OR REPLACE INTO survey VALUES(?,?,?,?,?,?,?)", (rel, ext, kind, size, json.dumps(trace), json.dumps(cands), note))
+        cnt[0] += 1
+        if cnt[0] % 1000 == 0:
+            con.commit(); print(f"  {cnt[0]}/{len(todo)} {cnt[0] / (time.time() - t0):.1f}/s", flush=True)
+
+    def on_crash(rel):
+        con.execute("INSERT OR REPLACE INTO survey VALUES(?,?,?,?,?,?,?)", (rel, os.path.splitext(rel)[1].lower().lstrip("."), "crashed", 0, "{}", "{}", "worker-crash"))
+    run_pool(_survey_one, todo, a.procs, _apply_init, on_res, on_crash, chunksize=8)
     con.commit()
 
 

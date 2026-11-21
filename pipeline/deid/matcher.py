@@ -10,6 +10,13 @@ except Exception:  # pragma: no cover
 _SEPS = "-_ ."
 
 
+def distinctive(o: str, long_len: int = 12) -> bool:
+    """True when o may be replaced inside a longer token (digits, separators, @, CamelCase or very long). Plain words may only
+    be replaced as whole tokens, so 'finition' never changes 'Definition'."""
+    return (any(c.isdigit() for c in o) or any(c in "-_ .@/\\" for c in o) or len(o) >= long_len
+            or any(c.isupper() for c in o[1:]) and any(c.islower() for c in o))
+
+
 def _variants(orig: str, pseudo: str):
     """Yield (original_variant, pseudonym_variant) pairs. Same length always."""
     seen = set()
@@ -44,8 +51,9 @@ class Matcher:
         for o, p in items:
             if len(o) < min_len or o == p:
                 continue
+            nb_o = not distinctive(o)
             for ov, pv in _variants(o, p):
-                nb = len(ov) < boundary_len
+                nb = nb_o
                 try:
                     b8, r8 = ov.encode("utf-8"), pv.encode("utf-8")
                 except UnicodeEncodeError:
