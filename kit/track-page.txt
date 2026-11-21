@@ -1,0 +1,132 @@
+Machina - CAD De-ID · Builders Buildathon
+ [/buildathon] Buildathon [/buildathon#problems] Tracks [/buildathon/leaderboard] Leaderboard [/buildathon/status] Status [/buildathon/sign-in] Sign in
+ [/buildathon#start] Guide [/play] Play Mech Royale [/buildathon/watch] Watch [/buildathon/leaderboard] Leaderboard
+ [/buildathon/tracks/builders] Builders - Mech Royale [/buildathon/tracks/shopping-sessions] Databricks - Shopping Sessions [/buildathon/tracks/machina-deid] Machina - CAD De-ID [/buildathon/tracks/blast-radius] RWX - Blast Radius
+Open · closes Sun 11:00 AM EST
+Machina - CAD De-ID
+De-identify 139.7 GB of drawings, CAD files, and archives with consistent pseudonyms while keeping every file usable. 20 scored attempts.
+The problem
+Machina's engineering corpus has 188,722 files totaling 139.7 GB: PDFs, drawings, SolidWorks and Inventor files, neutral CAD formats, images, and archives. Build a pipeline that replaces identifying information with consistent pseudonyms while keeping every engineering file usable and the links between them intact.
+You do not need an AWS account. Download the input from [https://machina-input.joinbuilders.org] https://machina-input.joinbuilders.org, run your pipeline, upload your output to your team's Builders folder with upload.py, and submit that location on this page.
+1. Get the input
+Download the corpus from [https://machina-input.joinbuilders.org] https://machina-input.joinbuilders.org into ./input/. Use a case-sensitive filesystem with room for the 139.7 GB input, unpacked archives, and your output.
+Download the script: curl -fsSLO [https://machina-input.joinbuilders.org/get-input.sh] https://machina-input.joinbuilders.org/get-input.sh
+Test on 100 files first: bash get-input.sh --limit 100
+Download the full corpus: bash get-input.sh
+You can re-run get-input.sh anytime to skip completed files, resume incomplete downloads, and verify file sizes. Run bash get-input.sh --help for --prefix and --jobs options, or fetch for every file path and size.
+Follow Builders [https://www.instagram.com/joinbuilders/] Instagram [https://www.linkedin.com/company/buildersorg/] LinkedIn
+ [https://machina-input.joinbuilders.org/manifest.tsv] https://machina-input.joinbuilders.org/manifest.tsv
+On a slow connection, skip the download to your own machine: rent a cloud VM on your own account with any provider, with at least 400 GB of disk, and run get-input.sh, your pipeline, and upload.py there.
+Keep the raw input private. Do not publish or share it.
+2. Build and run your pipeline
+Process the full corpus with a reproducible pipeline on any machine. Keep temporary files and private mappings out of your submission folder.
+Replace identifying company and person names, accounts, contact details, domains, addresses, logos, and identifying project or part names and numbers. Give the same identity one consistent pseudonym across the corpus, keep distinct identities separate, and fill identity fields with meaningful pseudonyms rather than blanking them.
+Cover visible text and images, file and folder names, PDF metadata and attachments, native CAD properties, embedded previews, and archive contents. Inspect internal metadata in native files: a plain text search or a clean preview is not enough.
+Preserve geometry, dimensions, tolerances, units, materials, configurations, BOMs, and links between drawings, models, and assemblies. Update references when you rename a file, keep usable native files (not only exported PDFs or images), and leave format-required keys and non-identifying engineering data unchanged.
+The input has duplicates and some invalid or empty files. Do not silently drop difficult engineering files. Explain source defects and omissions in README.txt using final paths or neutral descriptions, and leave no original identifiers inside output archives.
+3. Prepare your attempt folder
+Give each attempt its own attempt-N/ folder containing a full copy of your output and code:
+attempt-N/corpus/ holds the de-identified files and archives.
+attempt-N/code/ holds the complete pipeline source and dependency versions or lockfiles. Identifier-matching logic is allowed here; scoring reads corpus/.
+attempt-N/README.txt gives exact run instructions, limitations, and exceptions.
+Exclude credentials, raw input, temporary files, and private run logs.
+4. Upload and submit
+Download upload.py below (Python 3, nothing to install), then press Get upload token in the submission panel. The token lasts 1 hour and writes only to your team's private Builders folder, gs://builders-machina-submissions-1120/teams/<your-team-id>/.
+Run the upload.py command shown in the panel to upload corpus/, code/, and README.txt into attempt-N/. If the token expires mid-upload, get a new one and paste it when upload.py prompts; re-running upload.py skips files already uploaded.
+Submit gs://builders-machina-submissions-1120/teams/<your-team-id>/attempt-N/ in the form on this page. You do not need to look up your team id: after Get upload token, the panel shows your folder with it filled in, and Use in submit box copies it into the form. Files in your Builders folder are deleted 10 days after upload. Leave submitted attempts unchanged until results are published.
+How it is scored
+Each attempt is scored out of 1,000 private checks on corpus/, with pass counts by category (never which checks or files). A check on a file the scorer cannot find or open fails (and shows as not checked), so a broken or missing file costs points. Keep each file's extension and the parts of its path that do not identify anyone so the scorer can find the files it checks.
+Grading usually takes under 20 minutes once started, and at most 3 hours. Your team has 20 scored attempts in total and may submit twice an hour.
+Work at Machina
+Machina is hiring Engineering Researchers. Apply at [https://www.machina.how/app/pages/custom_view_887nw8e216] https://www.machina.how/app/pages/custom_view_887nw8e216.
+Machina will refer the top 3 teams for a first-round interview.
+Alternative: submit from your own AWS bucket
+If your output is already in an AWS S3 bucket you own in us-west-2, you can submit from there instead. Apply the bucket policy in challenge.pdf once to allow public s3:GetObject on submissions/* and s3:ListBucket on submissions/ and submissions/*, with no public writes and input/ kept private. If your account blocks public buckets, ask an organizer; do not change account-wide controls or share AWS credentials.
+Verify public access with aws s3 ls s3://<bucket>/submissions/attempt-1/ --recursive --no-sign-request --region us-west-2, and test downloading one file from corpus/ and one from code/. Submit s3://<bucket>/submissions/attempt-1/ (the folder holding corpus/, not corpus/ itself) on this page.
+Docs and starter files
+ [/buildathon/tracks/machina-deid/files/challenge.pdf?inline=1] challenge.pdf [/buildathon/tracks/machina-deid/files/challenge.pdf] DownloadMachina's challenge brief and the exact AWS bucket policy if you submit from your own S3 bucket. Where challenge.pdf and this page differ on attempts, where the input comes from, or how to submit, this page applies.
+ [/buildathon/tracks/machina-deid/files/upload.py?inline=1] upload.py [/buildathon/tracks/machina-deid/files/upload.py] DownloadUploads corpus/, code/, and README.txt to your team's Builders folder. Python 3, nothing to install.
+Sample submission
+gs://builders-machina-submissions-1120/teams/your-team-id/attempt-1/
+Scoring
+Metric
+Checks passed, higher is better
+Baseline to beat
+292 (The input copied unchanged)
+Formula
+checks passed, out of 1,000
+Ties
+Equal scores rank the earlier attempt first.
+Scorer version
+machina-deid-1
+Each attempt's corpus/ is checked against 1,000 private checks: names replaced consistently everywhere they appear, and the engineering files still usable. You see your total score and pass counts by category, never which checks or files.
+Rules
+Submit one location ending in / that holds corpus/, code/, and README.txt: your team's Builders folder (gs://builders-machina-submissions-1120/teams/<your-team-id>/attempt-N/) or your own AWS bucket in us-west-2 (s3://<bucket>/<folder>/).
+Use your team's Builders folder only for your submissions, and never submit another team's folder.
+You have 20 scored attempts in total and 2 submissions per hour. An attempt counts once queued unless rejected; rejected submissions still count toward the hourly limit. Your form shows both counts.
+One submission at a time per team; the next waits until the current one finishes grading.
+A submission is rejected without using an attempt if the location is malformed, corpus/ is missing or empty, or (for an AWS bucket) the bucket is outside us-west-2 or not publicly readable.
+Keep corpus/ to at most 400,000 objects. The scorer stops and rejects the submission without using an attempt if corpus/ exceeds 400,000 objects, or if finding the files it checks takes more than 12 GB of downloads or 1 hour of reading.
+Any single file over 2 GB in corpus/ is skipped during grading.
+If our scorer fails on an attempt, it waits on the organizers until we score it or return the attempt. Your form shows any waiting attempts.
+Organizers may re-grade all teams equally with a stricter grader during the event; the board and final ranking use the latest scores.
+Leave submitted attempts unchanged until results are published.
+Equal scores rank the earlier attempt first.
+The final
+The leaderboard at the cutoff is final. Your best scored attempt keeps its score, and nothing new is graded at the cutoff.
+The cutoff is Sun 11:00 AM EST.
+ [/buildathon/sign-in] Sign in to submit.
+CAD De-ID
+by Machina · $5,000 prize · 125 teams
+Checks passed, higher is better. Equal scores rank the earlier attempt first.
+—Baseline292
+101212628
+375-hour limit reached506
+0167876
+04Aku namu Tata724
+18Anthony Teti583
+46azing475
+35BackwardsDeployeds511
+09benchmaster651
+22blanc555
+15cereal604
+48dawgs465
+19Dream Team570
+34Eagle Eye517
+50Fraun462
+49GoatGiannis463
+07Hackermen682
+44hey481
+42Hidden Test Cases492
+25hui546
+36ilovepancakes507
+27ImagineLosing538
+23JISHNU549
+38Junsung Hwang506
+12JusCAD_devs619
+26Kang546
+32kawai momo521
+33ManiFest519
+03Monsters736
+02ND776
+39NecritsSoup504
+14Overcooked609
+16Person594
+08poteto654
+20putabuilderon563
+11Quiet_Omen626
+17Ragavin590
+05roasteduck707
+24Robust Intuition546
+13sirPeasALot617
+40Team FAST501
+43Team-Xero491
+06teh_daemons693
+45The Real Problem Solvers477
+29TigerTown27536
+47Tyke468
+31unos523
+21W squad558
+30who dey530
+41whyMiso497
+28yoookay538
