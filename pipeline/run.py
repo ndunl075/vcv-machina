@@ -1,0 +1,203 @@
+#!/usr/bin/env python3.12
+"""De-identification pipeline driver.   python run.py {seed|harvest|apply|survey|verify|all} [--limit N] [--procs 6] [--force]
+Everything is resumable: per-file results live in WORK/ledger.sqlite and WORK/registry.sqlite."""
+import argparse, json, multiprocessing as mp, os, sys, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from deid import core, harvest, ident, rewrite
+from deid.registry import Registry
+
+_eng = None
+
+
+def _init():
+    os.nice(10)
+
+
+def _harvest_one(rel):
+    path = os.path.join(core.INPUT, rel)
+    out = []
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return rel, "empty", []
+        data = open(path, "rb").read() if size <= (96 << 20) else _bigwin(path, size)
+        _harvest_blob(rel, data, out, 0)
+        return rel, "ok", out
+    except Exception as e:
+        return rel, "error:" + type(e).__name__, out
+
+
+def _bigwin(path, size):
+    with open(path, "rb") as f:
+        h = f.read(harvest.HEAD)
+        f.seek(max(0, size - harvest.TAIL))
+        return h + f.read()
+
+
+def _harvest_blob(name, data, out, depth):
+    kind = rewrite.sniff(name, data)
+    if depth < 4 and kind == "zip":
+        import io, zipfile
+        try:
+            z = zipfile.ZipFile(io.BytesIO(data))
+            for info in z.infolist():
+                if info.is_dir() or info.file_size > (96 << 20):
+                    continue
+                low = info.filename.lower()
+                # only open members that can carry identifiers; skip bulk geometry/image members
+                if low.endswith((".brep", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".bmp")) and not low.endswith("thumbnail.png"):
+                    continue
+                _harvest_blob(info.filename, z.read(info), out, depth + 1)
+            return
+        except Exception:
+            pass
+    if kind == "pdf":
+        if harvest.pdf_candidates(data, out):
+            return
+    if kind == "ole":
+        if harvest.ole_candidates(__import__("io").BytesIO(data), out):
+            harvest.raw_candidates(name, data[:1 << 16], out)
+            return
+    if depth < 4 and kind == "gzip":
+        import gzip
+        try:
+            _harvest_blob(name[:-3] if name.lower().endswith(".gz") else name, gzip.decompress(data), out, depth + 1)
+            return
+        except Exception:
+            pass
+    harvest.raw_candidates(name, data, out)
+
+
+def cmd_harvest(a):
+    con = core.ledger()
+    reg = Registry(core.REGDB, core.get_seed())
+    rels = list(core.walk_inputs())
+    if a.limit:
+        rels = rels[: a.limit]
+    core.seed_paths(reg, rels)
+    done = {r for (r,) in con.execute("SELECT rel FROM harvest")} if not a.force else set()
+    todo = [r for r in rels if r not in done]
+    print(f"harvest: {len(rels)} files, {len(todo)} to do", flush=True)
+    t0 = time.time(); n = 0; nb = 0
+    with mp.Pool(a.procs, initializer=_init) as pool:
+        for rel, status, cands in pool.imap_unordered(_harvest_one, todo, chunksize=8):
+            cands = [c for c in cands if c[0] != "__attachment__"]
+            ident.register_candidates(reg, cands, source=os.path.splitext(rel)[1].lower())
+            con.execute("INSERT OR REPLACE INTO harvest VALUES(?,?,?)", (rel, status, len(cands)))
+            n += 1
+            if n % 500 == 0:
+                reg.commit(); con.commit()
+                print(f"  {n}/{len(todo)}  registry={len(reg.map)}  {n / (time.time() - t0):.1f} files/s", flush=True)
+    reg.commit(); con.commit()
+    print(f"harvest done: registry has {len(reg.map)} identities in {time.time() - t0:.0f}s")
+
+
+_E = None
+
+
+def _apply_init():
+    global _E
+    os.nice(10)
+    _E = core.Engine()
+
+
+def _apply_one(rel):
+    t = time.time()
+    try:
+        orel, handler, status, nrep, note = core.apply_one(_E, rel)
+    except Exception as e:
+        return rel, "", "error", "error", 0, 0, time.time() - t, f"{type(e).__name__}:{e}"[:200]
+    return rel, orel, handler, status, nrep, os.path.getsize(os.path.join(core.INPUT, rel)), time.time() - t, note
+
+
+def cmd_apply(a):
+    con = core.ledger()
+    reg = Registry(core.REGDB, core.get_seed(), readonly=True)
+    ver = core.reg_fingerprint(reg)
+    rels = list(core.walk_inputs())
+    if a.limit:
+        rels = rels[: a.limit]
+    done = {r for (r,) in con.execute("SELECT rel FROM files WHERE regver=? AND status IN ('ok')", (ver,))} if not a.force else set()
+    todo = [r for r in rels if r not in done]
+    print(f"apply: {len(rels)} files, {len(todo)} to do, registry {len(reg.map)} identities, version {ver}", flush=True)
+    t0 = time.time(); n = 0; nbytes = 0
+    with mp.Pool(a.procs, initializer=_apply_init) as pool:
+        for rel, orel, handler, status, nrep, size, secs, note in pool.imap_unordered(_apply_one, todo, chunksize=4):
+            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)", (rel, orel, handler, status, nrep, size, secs, ver, note))
+            n += 1; nbytes += size
+            if n % 500 == 0:
+                con.commit()
+                el = time.time() - t0
+                print(f"  {n}/{len(todo)} {n / el:.1f} files/s {nbytes / el / 1e6 * 60 / 1000:.2f} GB/min", flush=True)
+    con.commit()
+    el = max(time.time() - t0, 1e-6)
+    print(f"apply done: {n} files, {nbytes / 1e9:.2f} GB in {el:.0f}s = {n / el * 60:.0f} files/min, {nbytes / 1e9 / el * 60:.2f} GB/min")
+
+
+def _survey_one(rel):
+    from deid.rewrite import Ctx
+    t = time.time()
+    path = os.path.join(core.INPUT, rel)
+    ext = os.path.splitext(rel)[1].lower().lstrip(".")
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return rel, ext, "empty", 0, {}, {}, ""
+        with open(path, "rb") as f:
+            head = f.read(8)
+        kind = rewrite.sniff(rel, head)
+        cands = []
+        notes: list = []
+        ctx = rewrite.Ctx(_E.cm, _E.pm, notes)
+        if size <= (96 << 20):
+            data = open(path, "rb").read()
+            _harvest_blob(rel, data, cands, 0)
+            rewrite.process_blob(ctx, rel, data)
+        else:
+            win = _bigwin(path, size)
+            _harvest_blob(rel, win, cands, 0)
+            ctx.t("raw-bytes", len(core._scan_patches(path, size, _E.cm)))
+        kinds: dict = {}
+        for c in cands:
+            if c[0] != "__attachment__":
+                kinds[c[0]] = kinds.get(c[0], 0) + 1
+        return rel, ext, kind, size, ctx.trace, kinds, ";".join(notes)
+    except Exception as e:
+        return rel, ext, "error", 0, {}, {}, f"{type(e).__name__}:{e}"[:150]
+
+
+def cmd_survey(a):
+    con = core.ledger()
+    rels = list(core.walk_inputs())
+    if a.limit:
+        rels = rels[: a.limit]
+    done = {r for (r,) in con.execute("SELECT rel FROM survey")} if not a.force else set()
+    todo = [r for r in rels if r not in done]
+    print(f"survey: {len(todo)} files", flush=True)
+    t0 = time.time(); n = 0
+    with mp.Pool(a.procs, initializer=_apply_init) as pool:
+        for rel, ext, kind, size, trace, cands, note in pool.imap_unordered(_survey_one, todo, chunksize=8):
+            con.execute("INSERT OR REPLACE INTO survey VALUES(?,?,?,?,?,?,?)", (rel, ext, kind, size, json.dumps(trace), json.dumps(cands), note))
+            n += 1
+            if n % 1000 == 0:
+                con.commit(); print(f"  {n}/{len(todo)} {n / (time.time() - t0):.1f}/s", flush=True)
+    con.commit()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["harvest", "apply", "survey", "all"])
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--procs", type=int, default=6)
+    ap.add_argument("--force", action="store_true")
+    a = ap.parse_args()
+    if a.cmd in ("harvest", "all"):
+        cmd_harvest(a)
+    if a.cmd in ("apply", "all"):
+        cmd_apply(a)
+    if a.cmd == "survey":
+        cmd_survey(a)
+
+
+if __name__ == "__main__":
+    main()

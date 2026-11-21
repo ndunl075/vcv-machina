@@ -1,5 +1,5 @@
-.DS_Store
 __pycache__/
-/work/
-/out/
 *.pyc
+*.sqlite*
+seed.bin
+venv/
