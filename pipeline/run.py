@@ -86,14 +86,17 @@ def cmd_harvest(a):
         rel, status, cands = res
         cands = [c for c in cands if c[0] != "__attachment__"]
         ident.register_candidates(reg, cands, source=os.path.splitext(rel)[1].lower())
-        con.execute("INSERT OR REPLACE INTO harvest VALUES(?,?,?)", (rel, status, len(cands)))
+        kc: dict = {}
+        for c in cands:
+            kc[c[0]] = kc.get(c[0], 0) + 1
+        con.execute("INSERT OR REPLACE INTO harvest(rel,status,ncand,kinds) VALUES(?,?,?,?)", (rel, status, len(cands), json.dumps(kc)))
         cnt[0] += 1
         if cnt[0] % 500 == 0:
             reg.commit(); con.commit()
             print(f"  {cnt[0]}/{len(todo)}  registry={len(reg.map)}  {cnt[0] / (time.time() - t0):.1f} files/s", flush=True)
 
     def on_crash(rel):
-        con.execute("INSERT OR REPLACE INTO harvest VALUES(?,?,?)", (rel, "crashed", 0)); con.commit()
+        con.execute("INSERT OR REPLACE INTO harvest(rel,status,ncand) VALUES(?,?,?)", (rel, "crashed", 0)); con.commit()
     run_pool(_harvest_one, todo, a.procs, _init, on_res, on_crash, chunksize=8)
     reg.commit(); con.commit()
     print(f"harvest done: registry has {len(reg.map)} identities in {time.time() - t0:.0f}s")
@@ -111,10 +114,10 @@ def _apply_init():
 def _apply_one(rel):
     t = time.time()
     try:
-        orel, handler, status, nrep, note = core.apply_one(_E, rel)
+        orel, handler, status, nrep, note, trace = core.apply_one(_E, rel)
     except Exception as e:
-        return rel, "", "error", "error", 0, 0, time.time() - t, f"{type(e).__name__}:{e}"[:200]
-    return rel, orel, handler, status, nrep, os.path.getsize(os.path.join(core.INPUT, rel)), time.time() - t, note
+        return rel, "", "error", "error", 0, 0, time.time() - t, f"{type(e).__name__}:{e}"[:200], "{}"
+    return rel, orel, handler, status, nrep, os.path.getsize(os.path.join(core.INPUT, rel)), time.time() - t, note, json.dumps(trace)
 
 
 def cmd_apply(a):
@@ -131,8 +134,8 @@ def cmd_apply(a):
     stats = [0, 0]
 
     def on_res(res):
-        rel, orel, handler, status, nrep, size, secs, note = res
-        con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)", (rel, orel, handler, status, nrep, size, secs, ver, note))
+        rel, orel, handler, status, nrep, size, secs, note, trace = res
+        con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?,?)", (rel, orel, handler, status, nrep, size, secs, ver, note, trace))
         stats[0] += 1; stats[1] += size
         if stats[0] % 500 == 0:
             con.commit()
@@ -144,7 +147,7 @@ def cmd_apply(a):
             eng = core.Engine()
             orel = eng.out_rel(rel)
             core.clone(os.path.join(core.INPUT, rel), os.path.join(core.OUT, orel))
-            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)", (rel, orel, "crash", "cloned-after-crash", 0, os.path.getsize(os.path.join(core.INPUT, rel)), 0, ver, "worker-crash"))
+            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?,?)", (rel, orel, "crash", "cloned-after-crash", 0, os.path.getsize(os.path.join(core.INPUT, rel)), 0, ver, "worker-crash", "{}"))
             con.commit()
         except Exception as e:
             print("crash handler failed", rel, e, file=sys.stderr)
@@ -155,60 +158,9 @@ def cmd_apply(a):
     print(f"apply done: {n} files, {nbytes / 1e9:.2f} GB in {el:.0f}s = {n / el * 60:.0f} files/min, {nbytes / 1e9 / el * 60:.2f} GB/min")
 
 
-def _survey_one(rel):
-    from deid.rewrite import Ctx
-    t = time.time()
-    path = os.path.join(core.INPUT, rel)
-    ext = os.path.splitext(rel)[1].lower().lstrip(".")
-    try:
-        size = os.path.getsize(path)
-        if size == 0:
-            return rel, ext, "empty", 0, {}, {}, ""
-        with open(path, "rb") as f:
-            head = f.read(8)
-        kind = rewrite.sniff(rel, head)
-        cands = []
-        notes: list = []
-        ctx = rewrite.Ctx(_E.cm, _E.pm, notes)
-        if size <= (96 << 20):
-            data = open(path, "rb").read()
-            _harvest_blob(rel, data, cands, 0)
-            rewrite.process_blob(ctx, rel, data)
-        else:
-            win = _bigwin(path, size)
-            _harvest_blob(rel, win, cands, 0)
-            ctx.t("raw-bytes", len(core._scan_patches(path, size, _E.cm)))
-        kinds: dict = {}
-        for c in cands:
-            if c[0] != "__attachment__":
-                kinds[c[0]] = kinds.get(c[0], 0) + 1
-        return rel, ext, kind, size, ctx.trace, kinds, ";".join(notes)
-    except Exception as e:
-        return rel, ext, "error", 0, {}, {}, f"{type(e).__name__}:{e}"[:150]
-
-
 def cmd_survey(a):
-    con = core.ledger()
-    rels = list(core.walk_inputs())
-    if a.limit:
-        rels = rels[: a.limit]
-    done = {r for (r,) in con.execute("SELECT rel FROM survey")} if not a.force else set()
-    todo = [r for r in rels if r not in done]
-    print(f"survey: {len(todo)} files", flush=True)
-    t0 = time.time(); n = 0
-    cnt = [0]
-
-    def on_res(res):
-        rel, ext, kind, size, trace, cands, note = res
-        con.execute("INSERT OR REPLACE INTO survey VALUES(?,?,?,?,?,?,?)", (rel, ext, kind, size, json.dumps(trace), json.dumps(cands), note))
-        cnt[0] += 1
-        if cnt[0] % 1000 == 0:
-            con.commit(); print(f"  {cnt[0]}/{len(todo)} {cnt[0] / (time.time() - t0):.1f}/s", flush=True)
-
-    def on_crash(rel):
-        con.execute("INSERT OR REPLACE INTO survey VALUES(?,?,?,?,?,?,?)", (rel, os.path.splitext(rel)[1].lower().lstrip("."), "crashed", 0, "{}", "{}", "worker-crash"))
-    run_pool(_survey_one, todo, a.procs, _apply_init, on_res, on_crash, chunksize=8)
-    con.commit()
+    import subprocess
+    subprocess.check_call([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "survey_report.py")])
 
 
 def main():

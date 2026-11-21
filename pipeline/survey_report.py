@@ -5,7 +5,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deid import core
 
 con = sqlite3.connect(core.LEDGER)
-rows = con.execute("SELECT rel, ext, kind, size, where_hits, cands, note FROM survey").fetchall()
+rows = []
+for rel, handler, size, trace, note, kinds in con.execute("SELECT f.rel, f.handler, f.size, f.trace, f.note, h.kinds FROM files f LEFT JOIN harvest h ON h.rel = f.rel"):
+    rows.append((rel, os.path.splitext(rel)[1].lower().lstrip("."), handler, size, trace, kinds, note))
 total = len(rows)
 by = collections.defaultdict(lambda: {"n": 0, "bytes": 0, "hit": 0, "loc": collections.Counter(), "cand": collections.Counter(), "candfiles": collections.Counter(), "kinds": collections.Counter(), "err": 0})
 src = collections.defaultdict(lambda: {"n": 0, "bytes": 0, "hit": 0, "exts": collections.Counter()})

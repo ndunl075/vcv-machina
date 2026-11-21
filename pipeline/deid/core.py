@@ -59,18 +59,51 @@ def repo_parts(component: str):
     return None
 
 
+def gitlab_parts(component: str):
+    """'gitlab.com__group__sub__repo[__hash12]' -> (host, [names...], hash|None)."""
+    parts = component.split("__")
+    h = None
+    if len(parts) >= 3 and HEX12.match(parts[-1]):
+        h = parts[-1]; parts = parts[:-1]
+    if len(parts) >= 3 and "." in parts[0]:
+        return parts[0], parts[1:], h
+    return None
+
+
+PUBLIC_WEB = set("""arxiv.org github.com gitlab.com wikipedia.org wikimedia.org youtube.com researchgate.net academia.edu semanticscholar.org
+doi.org ieee.org springer.com sciencedirect.com nasa.gov nist.gov iso.org ansi.org autodesk.com solidworks.com 3ds.com ptc.com siemens.com
+grabcad.com thingiverse.com printables.com cults3d.com sketchfab.com google.com""".split())
+
+
 def seed_paths(reg: Registry, rels):
-    """Register owner / repo of github + gitlab roots (structured identities; every path starts from these)."""
+    """Register the structured identities that every path starts from: GitHub owner/repo, GitLab group/repo, web host,
+    catalog dataset title. Generic-looking single words stay 'path' scope (renamed only as a whole root folder)."""
     seen = set()
     for rel in rels:
         p = rel.split("/")
-        if len(p) >= 3 and p[0] == "sources" and p[1] in ("github", "gitlab") and p[2] not in seen:
-            seen.add(p[2])
+        if len(p) < 3 or p[0] != "sources" or (p[1], p[2]) in seen:
+            continue
+        seen.add((p[1], p[2]))
+        if p[1] == "github":
             rp = repo_parts(p[2])
             if rp:
                 o, r, _ = rp
                 for v, kind in ((o, "account"), (r, "project")):
                     reg.pseudonym(v, kind, "path-root", scope="path" if ident.is_generic_phrase(v) else "all")
+        elif p[1] == "gitlab":
+            gp = gitlab_parts(p[2])
+            if gp:
+                named = [x for x in gp[1] if x]
+                for i, v in enumerate(named):
+                    reg.pseudonym(v, "project" if i == len(named) - 1 else "account", "path-root", scope="path" if ident.is_generic_phrase(v) else "all")
+        elif p[1] == "web":
+            from .registry import split_domain
+            sub, rd = split_domain(p[2])
+            if rd and rd not in PUBLIC_WEB and rd not in ident.PUBLIC_DOMAINS and len(rd) >= 6:
+                reg.pseudonym(rd, "domain", "path-root")
+        elif p[1] == "catalog":
+            if len(p[2]) >= 8:
+                reg.pseudonym(p[2], "project", "path-root", scope="path" if ident.is_generic_phrase(p[2]) else "all")
     reg.commit()
 
 
@@ -97,7 +130,13 @@ class Engine:
         comps = rel.split("/")
         res = []
         for i, c in enumerate(comps):
-            if i == 2 and comps[0] == "sources" and comps[1] in ("github", "gitlab"):
+            if i == 2 and comps[0] == "sources" and comps[1] == "gitlab":
+                gp = gitlab_parts(c)
+                if gp:
+                    host, names, h = gp
+                    res.append("__".join([host] + [self.reg.pseudonym(n, "project") if n else "" for n in names]) + ("__" + h if h else ""))
+                    continue
+            if i == 2 and comps[0] == "sources" and comps[1] == "github":
                 rp = repo_parts(c)
                 if rp:
                     o, r, h = rp
@@ -132,11 +171,12 @@ def apply_one(eng: Engine, rel: str):
     orel = eng.out_rel(rel)
     dst = os.path.join(OUT, orel)
     eng.ctx_notes.clear()
+    eng.ctx.trace.clear()
     st = os.stat(src)
     size = st.st_size
     if size == 0:
         clone(src, dst)
-        return orel, "empty", "ok", 0, "empty-input"
+        return orel, "empty", "ok", 0, "empty-input", {}
     with open(src, "rb") as f:
         head = f.read(8)
         f.seek(257); tarmagic = f.read(5)
@@ -147,26 +187,26 @@ def apply_one(eng: Engine, rel: str):
             new = rewrite.process_blob(eng.ctx, rel, data)
             if new is None:
                 clone(src, dst)
-                return orel, kind, "ok", 0, ";".join(eng.ctx_notes)
+                return orel, kind, "ok", 0, ";".join(eng.ctx_notes), dict(eng.ctx.trace)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst, "wb") as f:
                 f.write(new)
             os.utime(dst, (st.st_atime, st.st_mtime))
-            return orel, kind, "ok", 1, ";".join(eng.ctx_notes)
+            return orel, kind, "ok", 1, ";".join(eng.ctx_notes), dict(eng.ctx.trace)
         patches = _scan_patches(src, size, eng.cm)
         clone(src, dst)
         if patches:
             with open(dst, "r+b") as f:
                 for off, rep in patches:
                     f.seek(off); f.write(rep)
-        return orel, "raw" if kind == "raw" else kind + "-big", "ok", len(patches), ";".join(eng.ctx_notes)
+        return orel, "raw" if kind == "raw" else kind + "-big", "ok", len(patches), ";".join(eng.ctx_notes), ({"raw-bytes": len(patches)} if patches else {})
     except Exception as e:
         # never drop a file: keep it unchanged and report
         try:
             clone(src, dst)
         except Exception:
             pass
-        return orel, kind, "cloned-after-error", 0, f"{type(e).__name__}:{e}"[:200]
+        return orel, kind, "cloned-after-error", 0, f"{type(e).__name__}:{e}"[:200], {}
 
 
 # ---------------------------------------------------------------------------------------------- ledger
@@ -174,7 +214,10 @@ def ledger():
     con = sqlite3.connect(LEDGER, timeout=120)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("""CREATE TABLE IF NOT EXISTS files(rel TEXT PRIMARY KEY, out_rel TEXT, handler TEXT, status TEXT, nrep INTEGER, size INTEGER,
-                   secs REAL, regver TEXT, note TEXT)""")
-    con.execute("""CREATE TABLE IF NOT EXISTS harvest(rel TEXT PRIMARY KEY, status TEXT, ncand INTEGER)""")
+                   secs REAL, regver TEXT, note TEXT, trace TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS harvest(rel TEXT PRIMARY KEY, status TEXT, ncand INTEGER, kinds TEXT)""")
+    for tbl, col in (("files", "trace"), ("harvest", "kinds")):
+        if col not in [r[1] for r in con.execute(f"PRAGMA table_info({tbl})")]:
+            con.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT")
     con.execute("""CREATE TABLE IF NOT EXISTS survey(rel TEXT PRIMARY KEY, ext TEXT, kind TEXT, size INTEGER, where_hits TEXT, cands TEXT, note TEXT)""")
     return con
