@@ -320,7 +320,7 @@ def pdf_candidates(data: bytes, out: list):
         pdf.close()
     # visible text of the first pages
     try:
-        import fitz
+        import pymupdf as fitz
         doc = fitz.open(stream=data, filetype="pdf")
         txt = []
         for i, pg in enumerate(doc):

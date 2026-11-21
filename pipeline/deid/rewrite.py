@@ -335,7 +335,7 @@ def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
 
 def _pdf_visible_fixup(ctx: Ctx, data: bytes, name: str, orig_changed: bool):
     try:
-        import fitz
+        import pymupdf as fitz
     except Exception:
         return data if orig_changed else None
     try:

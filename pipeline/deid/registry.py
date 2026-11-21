@@ -97,11 +97,31 @@ def _split_sep(orig: str):
     return m.group(0) if m else ""
 
 
+@lru_cache(maxsize=None)
+def _long_person_index(n: int):
+    """'First Mid Last' / 'First M. Last' names of exactly n characters (for long original names)."""
+    mids = {}
+    for f in W.FIRST:
+        mids.setdefault(len(f), []).append(f)
+    mids.setdefault(2, []).extend(chr(c) + "." for c in range(65, 91))
+    out = []
+    for f in W.FIRST[::3]:
+        for l in W.LAST[::2]:
+            r = n - len(f) - len(l) - 2
+            for m in mids.get(r, [])[:6]:
+                out.append(f"{f} {m} {l}")
+    return out
+
+
 def gen_person(seed, orig, probe=0):
     n = len(orig)
     h = _h(seed, "person", orig.lower())
     s = _pick(_person_index(), n, h, probe)
     st = _stream(seed, "person", orig.lower(), str(probe))
+    if s is None and n > 12:
+        lst = _long_person_index(n)
+        if lst:
+            s = lst[(h + probe * 7919) % len(lst)]
     if s is None:
         if n >= 7:  # "A. Surname" style
             last = _pick(_word_index(), n - 3, h, probe)

@@ -73,7 +73,7 @@ class Matcher:
     def _build(pats):
         if not pats or _ac is None:
             return None
-        return _ac.AhoCorasick(pats, matchkind=_ac.MatchKind.LeftmostLongest)
+        return _ac.AhoCorasick([p.decode('latin-1') for p in pats], matchkind=_ac.MatchKind.LeftmostLongest)  # latin-1: 1 char == 1 byte
 
     # ---- bytes ----------------------------------------------------------------------------------------------
     @staticmethod
@@ -83,7 +83,7 @@ class Matcher:
     def _apply(self, data: bytes, ac, pats, reps, need_b, wide: bool):
         if ac is None or not data:
             return data, 0
-        ms = ac.find_matches_as_indexes(data, overlapping=False)
+        ms = ac.find_matches_as_indexes(data.decode('latin-1'), overlapping=False)
         if not ms:
             return data, 0
         out = bytearray(data)
@@ -109,7 +109,7 @@ class Matcher:
         if ac is None or not data:
             return []
         out = []
-        for idx, s, e in ac.find_matches_as_indexes(data, overlapping=False):
+        for idx, s, e in ac.find_matches_as_indexes(data.decode('latin-1'), overlapping=False):
             if need_b[idx]:
                 if wide:
                     if s >= 2 and data[s - 1] == 0 and self._isal(data[s - 2]):
@@ -157,7 +157,7 @@ class Matcher:
         out = []
         if self.ac8 is None:
             return out
-        for idx, st, e in self.ac8.find_matches_as_indexes(b, overlapping=False):
+        for idx, st, e in self.ac8.find_matches_as_indexes(b.decode('latin-1'), overlapping=False):
             if self.need_b8[idx] and ((st > 0 and self._isal(b[st - 1])) or (e < len(b) and self._isal(b[e]))):
                 continue
             out.append((b[st:e].decode("utf-8", "replace"), self.rep8[idx].decode("utf-8", "replace")))
