@@ -8,63 +8,127 @@ Fit: (1) plain deflate at levels 9..1 / strategies when the length happens to be
 empty stored blocks (5 bytes each, valid deflate any reader accepts) and a 2- or 5-byte final empty block pad up to the span.
 Every rewritten block is re-inflated and must equal the intended plaintext, else the original bytes stay."""
 from __future__ import annotations
-import re, struct, zlib, io
+import re, struct, zlib, io, time, itertools
 
 _HDR = re.compile(rb"\x78[\x01\x5e\x9c\xda]")
 MAX_STREAM = 400_000_000
 _PAD_STORED = b"\x00\x00\x00\xff\xff"
 _FINALS = (b"\x03\x00", b"\x01\x00\x00\xff\xff")          # empty final fixed-Huffman block (10 bits) / empty final stored block
 _PARAMS = [(l, m, s) for s in (0, 1) for m in (8, 9, 7, 6) for l in (1, 9, 6, 8, 7, 5, 4, 3, 2)]
+_FLEVEL_LEVELS = {0: (1,), 1: (5, 4, 3, 2), 2: (6,), 3: (9, 8, 7)}          # zlib header FLEVEL bits -> the levels that write them
+
+
+_STORED_FIRST = [(6, 8, 0), (9, 8, 0), (1, 8, 0)]
+
+
+def _ordered_params(hdr: bytes):
+    pref = _FLEVEL_LEVELS.get(hdr[1] >> 6, ())
+    return sorted(_PARAMS, key=lambda p: (p[0] not in pref, _PARAMS.index(p)))
+
+
+BLOCK_SECS_BASE, BLOCK_SECS_PER_MB, BLOCK_SECS_MAX = 1.0, 3.0, 5.0     # per block: min(5 s, 1 s + 3 s per MB of plaintext)
+BLOCK_MAX_COMPRESS = 400                                                # compress calls per block
+FILE_SECS = 20.0                                                        # all blocks of one file
+SCAN_MAX_PROBES, SCAN_MAX_FULL, SCAN_SECS = 60000, 300, 10.0
+MAX_INFLATE, SCAN_MAX_BLOCKS = 64 << 20, 5000                          # inflated bytes per block / blocks per stream            # find_blocks: header candidates / full inflate attempts / seconds per stream
+
+
+class OutOfBudget(Exception):
+    pass
+
+
+class _Budget:
+    def __init__(self, secs, calls):
+        self.end = time.monotonic() + secs
+        self.calls = calls
+
+    def tick(self):
+        self.calls -= 1
+        if self.calls < 0 or time.monotonic() > self.end:
+            raise OutOfBudget()
+
+
+_BUD = None
+
+
+def _co(lvl, mem, strat):
+    """zlib.compressobj that charges the current block budget (called once per full deflate pass)."""
+    if _BUD is not None:
+        _BUD.tick()
+    return zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+
+
+def _inflate_at(mv, s, n):
+    """(plaintext, end_offset) of the complete zlib stream starting at s, or None (incomplete, corrupt, or inflating past MAX_INFLATE).
+    Fed in bounded chunks so neither the output nor the unused_data copies can blow up."""
+    dec = zlib.decompressobj()
+    out, total, pos, chunk = [], 0, s, 8192
+    while pos < n:
+        piece = mv[pos:pos + chunk]
+        x = dec.decompress(piece, MAX_INFLATE - total + 1)
+        total += len(x)
+        out.append(x)
+        if total > MAX_INFLATE or dec.unconsumed_tail:
+            return None
+        if dec.eof:
+            return b"".join(out), pos + len(piece) - len(dec.unused_data)
+        pos += len(piece)
+        chunk = min(chunk * 2, 1 << 20)
+    return None
 
 
 def find_blocks(d: bytes):
-    """[(start, end, plaintext)] of non-overlapping complete zlib streams in d."""
+    """[(start, end, plaintext)] of non-overlapping complete zlib streams in d (bounded: probes, full attempts, seconds, blocks)."""
     out = []
     if len(d) > MAX_STREAM:
         return out
     mv = memoryview(d)
     i = 0
-    while True:
+    probes = full = 0
+    t_end = time.monotonic() + SCAN_SECS
+    while len(out) < SCAN_MAX_BLOCKS:
         m = _HDR.search(d, i)
         if not m:
+            break
+        probes += 1
+        if probes > SCAN_MAX_PROBES or full > SCAN_MAX_FULL or (probes & 255 == 0 and time.monotonic() > t_end):
             break
         s = m.start()
         try:
             probe = zlib.decompressobj()
             probe.decompress(mv[s:s + 512], 1 << 14)           # cheap rejection of false headers
-            dec = zlib.decompressobj()
-            plain = dec.decompress(mv[s:])
-            if not dec.eof:
-                raise zlib.error("truncated")
+            full += 1
+            r = _inflate_at(mv, s, len(d))
         except Exception:
+            r = None
+        if r is None:
             i = s + 1
             continue
-        e = len(d) - len(dec.unused_data)
-        out.append((s, e, plain))
-        i = e
+        out.append((s, r[1], r[0]))
+        i = r[1]
     return out
 
 
-def _fit_candidates(plain: bytes, total: int):
+def _fit_candidates(plain: bytes, total: int, params=None, splits=True):
     """Yield zlib streams (with the 2 header bytes of the caller prepended later) as raw deflate bodies of exact length total-6."""
     target = total - 6
     ad = struct.pack(">I", zlib.adler32(plain) & 0xFFFFFFFF)
     seen = set()
-    for lvl, mem, strat in _PARAMS:
+    for lvl, mem, strat in (params or _PARAMS):
         try:
-            c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+            c = _co(lvl, mem, strat)
             base = c.compress(plain) + c.flush(zlib.Z_SYNC_FLUSH)
         except zlib.error:
             continue
         # (1) exact length without padding
         try:
-            c2 = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+            c2 = _co(lvl, mem, strat)
             full = c2.compress(plain) + c2.flush()
             if len(full) == target:
                 yield full, ad, "exact"
         except zlib.error:
             pass
-        for body in _bases(plain, lvl, mem, strat, base):
+        for body in (_bases(plain, lvl, mem, strat, base) if splits else (base,)):
             b = len(body)
             if b in seen:
                 continue
@@ -81,7 +145,7 @@ def _stored_tail(plain, lvl, mem, strat, target):
     n = len(plain)
 
     def build(k):
-        c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+        c = _co(lvl, mem, strat)
         head = c.compress(plain[:n - k]) + c.flush(zlib.Z_SYNC_FLUSH)
         tail = plain[n - k:]
         return head + b"\x01" + struct.pack("<HH", len(tail), len(tail) ^ 0xFFFF) + tail
@@ -109,7 +173,7 @@ def _stored_head(plain, lvl, mem, strat, target):
     n = len(plain)
 
     def build(k):
-        c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+        c = _co(lvl, mem, strat)
         rest = c.compress(plain[k:]) + c.flush()
         return (b"\x00" + struct.pack("<HH", k, k ^ 0xFFFF) + plain[:k] if k else b"") + rest
     hi = min(n - 1, 65535)
@@ -139,40 +203,56 @@ def _bases(plain, lvl, mem, strat, first):
         if not 0 < k < n:
             continue
         try:
-            c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+            c = _co(lvl, mem, strat)
             yield c.compress(plain[:k]) + c.flush(zlib.Z_SYNC_FLUSH) + c.compress(plain[k:]) + c.flush(zlib.Z_SYNC_FLUSH)
         except zlib.error:
             continue
 
 
-def _fit_stored_tail(plain, total):
+def _fit_stored_tail(plain, total, params):
     ad = struct.pack(">I", zlib.adler32(plain) & 0xFFFFFFFF)
-    for lvl, mem, strat in ((1, 8, 0), (6, 8, 0), (9, 8, 0), (9, 9, 0), (1, 9, 0), (6, 9, 0)):
+    for lvl, mem, strat in params:
         for gen, how in ((_stored_head, "head"), (_stored_tail, "tail")):
             for body in gen(plain, lvl, mem, strat, total - 6):
                 yield body, ad, how
 
 
-def refit(block: bytes, plain: bytes):
-    """A zlib stream of exactly len(block) bytes that inflates to plain, or None."""
+def refit(block: bytes, plain: bytes, budget_secs: float | None = None):
+    """A zlib stream of exactly len(block) bytes that inflates to plain, or None (no fit, or out of budget: OutOfBudget is caught).
+    Order: the levels the header hints at (exact length, flush + pad), then the stored head/tail fits for those, then the full sweep."""
+    global _BUD
     if len(block) < 12:
         return None
     hdr = block[:2]
-    import itertools
-    for body, ad, how in itertools.chain(_fit_candidates(plain, len(block)), _fit_stored_tail(plain, len(block))):
-        cand = hdr + body + ad
-        if len(cand) != len(block):
-            continue
-        try:
-            dec = zlib.decompressobj()
-            if dec.decompress(cand) == plain and dec.eof and not dec.unused_data:
-                return cand, how
-        except Exception:
-            continue
+    params = _ordered_params(hdr)
+    first = params[:6]
+    if budget_secs is None:
+        budget_secs = min(BLOCK_SECS_MAX, BLOCK_SECS_BASE + BLOCK_SECS_PER_MB * len(plain) / 1e6)
+    _BUD = _Budget(budget_secs, BLOCK_MAX_COMPRESS)
+    try:
+        for body, ad, how in itertools.chain(_fit_candidates(plain, len(block), first[:3], False),       # cheap, most often successful
+                                             _fit_stored_tail(plain, len(block), _STORED_FIRST + first[:2]),
+                                             _fit_candidates(plain, len(block), first[3:], False),
+                                             _fit_candidates(plain, len(block), first, True),
+                                             _fit_stored_tail(plain, len(block), params[2:8]),
+                                             _fit_candidates(plain, len(block), params[6:], True)):
+            cand = hdr + body + ad
+            if len(cand) != len(block):
+                continue
+            try:
+                dec = zlib.decompressobj()
+                if dec.decompress(cand) == plain and dec.eof and not dec.unused_data:
+                    return cand, how
+            except Exception:
+                continue
+    except OutOfBudget:
+        return None
+    finally:
+        _BUD = None
     return None
 
 
-def rewrite_blocks(d: bytes, matcher):
+def rewrite_blocks(d: bytes, matcher, file_budget=None):
     """(new_bytes, stats, block_spans). stats: rewritten / nofit / failed / blocks / pads. Stream length never changes."""
     st = {"blocks": 0, "rewritten": 0, "nofit": 0, "failed": 0, "padded": 0}
     blocks = find_blocks(d)
@@ -190,10 +270,16 @@ def rewrite_blocks(d: bytes, matcher):
         if not n or new == plain:
             continue
         assert len(new) == len(plain)
+        if file_budget is not None and file_budget["left"] <= 0:
+            st["nofit"] += 1                     # file budget spent: leave the block unchanged
+            continue
+        t0 = time.monotonic()
         try:
             r = refit(bytes(d[s:e]), new)
         except Exception:
             r = None
+        if file_budget is not None:
+            file_budget["left"] -= time.monotonic() - t0
         if r is None:
             st["nofit"] += 1
             continue
@@ -213,26 +299,87 @@ def rewrite_blocks(d: bytes, matcher):
 
 
 def apply_patches_outside(m, data: bytes, spans):
-    """Equal-length patches of matcher m on data, skipping any patch that touches one of the (start, end) spans."""
-    pt = m.patches(data)
+    """Equal-length patches of matcher m on data, skipping any patch that touches one of the (start, end) spans. Patches are sorted
+    by offset and overlaps resolved like Matcher/Chain.replace_bytes (first one wins)."""
+    pt = sorted(m.patches(data), key=lambda x: (x[0], -len(x[1])))
     if not pt:
         return data, 0
-    import bisect
-    starts = [a for a, _ in spans]
+    protect = bytearray(len(data))
+    for a, e in spans:
+        protect[a:e] = b"\x01" * (e - a)
+    return _apply_masked(data, pt, protect)
+
+
+def _apply_masked(data, pt, protect):
     out = bytearray(data)
     n = 0
     last = -1
     for o, r in pt:
         e = o + len(r)
-        if o < last:
-            continue
-        i = bisect.bisect_right(starts, o) - 1
-        if (i >= 0 and spans[i][1] > o) or (i + 1 < len(spans) and spans[i + 1][0] < e):
+        if o < last or e > len(data) or any(protect[o:e]):
             continue
         out[o:e] = r
         last = e
         n += 1
     return bytes(out), n
+
+
+def stream_pieces(o, sp):
+    """[(stream_offset, container_offset, length)] of one stream of an open OleFileIO (regular or mini stream)."""
+    sid = o._find(sp)
+    e = o.direntries[sid]
+    ss, ms = o.sectorsize, o.mini_sector_size
+    fat = o.fat
+
+    def chain(start, tab):
+        r, x, seen = [], start, set()
+        while tab is not None and x < 0xFFFFFFFA and x not in seen and x < len(tab):
+            seen.add(x); r.append(x); x = tab[x]
+        return r
+    out, left, so = [], e.size, 0
+    if e.size < o.minisectorcutoff:
+        if o.minifat is None:
+            o.loadminifat()
+        rootchain = chain(o.root.isectStart, fat)
+        per = ss // ms
+        for s in chain(e.isectStart, o.minifat):
+            if s // per >= len(rootchain):
+                break
+            take = min(ms, left)
+            out.append((so, (rootchain[s // per] + 1) * ss + (s % per) * ms, take))
+            so += take; left -= take
+    else:
+        for s in chain(e.isectStart, fat):
+            take = min(ss, left)
+            out.append((so, (s + 1) * ss, take))
+            so += take; left -= take
+    return out
+
+
+def container_spans(out_bytes: bytes, stream_spans: dict):
+    """Map {stream path: [(start, end) in stream]} to a protect mask (1 = compressed block byte) over the whole container."""
+    import olefile
+    protect = bytearray(len(out_bytes))
+    if not stream_spans:
+        return protect
+    o = olefile.OleFileIO(io.BytesIO(out_bytes))
+    try:
+        for sp, spans in stream_spans.items():
+            pieces = stream_pieces(o, list(sp))
+            for a, e in spans:
+                for so, co, ln in pieces:
+                    lo, hi = max(a, so), min(e, so + ln)
+                    if lo < hi:
+                        protect[co + lo - so: co + hi - so] = b"\x01" * (hi - lo)
+    finally:
+        o.close()
+    return protect
+
+
+def patch_container(m, raw: bytes, protect):
+    """Equal-length patches of m over the whole container, never touching protected (compressed block) bytes."""
+    pt = sorted(m.patches(raw), key=lambda x: (x[0], -len(x[1])))
+    return _apply_masked(raw, pt, protect) if pt else (raw, 0)
 
 
 def unowned_mask(raw: bytes):
@@ -279,19 +426,43 @@ def unowned_mask(raw: bytes):
     return bm
 
 
-def patch_unowned(m, raw: bytes):
-    """Apply matcher m only where every patched byte is unowned by any stream."""
-    pt = m.patches(raw)
+def structural_mask(raw: bytes):
+    """1 for the header, directory, FAT / DIFAT / mini-FAT sectors (never patched)."""
+    import olefile
+    bm = bytearray(len(raw))
+    o = olefile.OleFileIO(io.BytesIO(raw))
+    try:
+        ss = o.sectorsize
+        bm[0:ss] = b"\x01" * min(ss, len(raw))
+        fat = o.fat
+
+        def mark(s):
+            p = (s + 1) * ss
+            bm[p:p + ss] = b"\x01" * max(0, min(ss, len(raw) - p))
+        for i, v in enumerate(fat):
+            if v in (0xFFFFFFFD, 0xFFFFFFFC):
+                mark(i)
+        for first in (o.first_dir_sector, o.first_mini_fat_sector):
+            x, seen = first, set()
+            while x < 0xFFFFFFFA and x not in seen and x < len(fat):
+                seen.add(x); mark(x); x = fat[x]
+    finally:
+        o.close()
+    return bm
+
+
+def patch_unowned(m, raw: bytes, protect=None):
+    """Apply matcher m only where every patched byte is unowned by any stream (free sectors, slack after stream ends, free mini
+    sectors) and outside header / directory / FAT sectors and compressed blocks."""
+    pt = sorted(m.patches(raw), key=lambda x: (x[0], -len(x[1])))
     if not pt:
         return raw, 0
     bm = unowned_mask(raw)
-    out = bytearray(raw)
-    n = 0
-    for o, r in pt:
-        if not any(bm[o:o + len(r)]):
-            out[o:o + len(r)] = r
-            n += 1
-    return bytes(out), n
+    st = structural_mask(raw)
+    mask = bytearray(a | b for a, b in zip(bm, st))
+    if protect is not None:
+        mask = bytearray(a | b for a, b in zip(mask, protect))
+    return _apply_masked(raw, pt, mask)
 
 
 def short_matcher(fmap):
@@ -312,11 +483,13 @@ def short_matcher(fmap):
     return Matcher(items, min_len=3) if items else None
 
 
-def ascii_tail_pass(fmap, data: bytes):
+def ascii_tail_pass(fmap, data: bytes, spans=()):
     """ISolidWorksInformation style streams: an ASCII value followed by non-text bytes (high bytes) is not a token for the
     byte matcher. Replace whole-ASCII-token occurrences (neighbours not [A-Za-z0-9]) of the field values, high bytes ignored."""
     from .registry import _case_like
-    items = [(o, p) for o, p in fmap.values() if len(o) >= 4 and o.isascii() and len(p) == len(o)]
+    from . import fields
+    items = [(o, p) for o, p in fmap.values() if len(o) >= 4 and o.isascii() and len(p) == len(o)
+             and (fields.content_safe(o) or o.lower() in getattr(fields, "ACCOUNT_LIKE", ()))]
     if not items:
         return data, 0
     items.sort(key=lambda x: -len(x[0]))
@@ -325,6 +498,8 @@ def ascii_tail_pass(fmap, data: bytes):
     out = bytearray(data)
     n = 0
     for m in rx.finditer(data):
+        if any(a < m.end() and m.start() < e for a, e in spans):          # never inside a compressed block
+            continue
         o, p = look[m.group(0).decode().lower()]
         t = m.group(0).decode()
         out[m.start():m.end()] = (p if t == o else _case_like(p, t)).encode()
@@ -351,6 +526,8 @@ class AnsiMatcher:
             if len(o) < min_len or o.isascii() or len(o) != len(p):
                 continue
             for var in {o, o.lower(), o.upper(), o.title()}:
+                if var != o and (var.isascii() or len(var) != len(o)):      # e.g. 'ß'.upper() -> 'SS': would rewrite plain ASCII text
+                    continue
                 pv = p if var == o else _case_like(p, var)
                 for enc in _ANSI_ENCODINGS:
                     try:

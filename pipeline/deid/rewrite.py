@@ -167,6 +167,8 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ole")
     saved_m = ctx.m
     file_m = None            # per-file matcher (field values) for the container-level passes
+    chain_prop = chain_other = None
+    zspans: dict = {}        # stream path -> compressed block spans (never patched by any raw pass)
     try:
         tmp.write(data); tmp.close()
         ole = olefile.OleFileIO(tmp.name, write_mode=True)
@@ -174,6 +176,7 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
         try:
             # identity fields (author, last saved by, manager, company ...) of every property set, whatever their length or wording
             fids = None
+            fbud = {"left": olez.FILE_SECS}
             by_stream: dict = {}
             if ctx.reg is not None:
                 try:
@@ -185,13 +188,14 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                 if fids:
                     for sp, off, nb, kind, txt in slots:
                         by_stream.setdefault(tuple(sp), []).append((off, nb, kind, txt))
-                    m3 = olez.short_matcher(fids.map)
-                    file_m = fids.m_all if m3 is None else (m3 if fids.m_all is None else Chain(m3, fids.m_all))
+                    file_m = fids.m_all
                     ansi = olez.AnsiMatcher(fids.map)
                     if ansi:
                         file_m = ansi if file_m is None else Chain(ansi, file_m)
-                    if file_m is not None:
-                        ctx.m = Chain(file_m, saved_m)
+                    m3 = olez.short_matcher(fids.map)            # 3-character accounts: property-set streams only (binary data is full of 3-byte tokens)
+                    m_prop = file_m if m3 is None else (m3 if file_m is None else Chain(m3, file_m))
+                    chain_other = Chain(file_m, saved_m) if file_m is not None else saved_m
+                    chain_prop = Chain(m_prop, saved_m) if m_prop is not None else saved_m
             # every stream, read once and written once (olefile serves stale mini-stream data after a write):
             # field values first, then registry identities + the specific field values of this file
             for sp in ole.listdir(streams=True, storages=False):
@@ -202,6 +206,8 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                 if not st:
                     continue
                 buf = bytearray(st)
+                if chain_prop is not None:
+                    ctx.m = chain_prop if sp[-1][:1] == "\x05" else chain_other
                 for off, nb, kind, txt in by_stream.get(tuple(sp), ()):
                     new, n = fids.apply_text(txt)
                     if n:
@@ -211,9 +217,13 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                 if sp[-1][:1] != "\x05":
                     # zlib blocks: inflate, replace, deflate again into exactly the same span (olez.py)
                     try:
-                        zb, zst, spans = olez.rewrite_blocks(bytes(buf), ctx.m)
+                        zb, zst, spans = olez.rewrite_blocks(bytes(buf), ctx.m, fbud)
                     except Exception:
-                        zb, zst, spans = bytes(buf), {}, []
+                        zb, zst = bytes(buf), {}
+                        try:
+                            spans = [(a, b) for a, b, _ in olez.find_blocks(zb)]
+                        except Exception:
+                            spans = []
                         ctx.t("ole-zblock-exception")
                     if len(zb) == len(buf):
                         buf = bytearray(zb)
@@ -221,11 +231,12 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                                    ("padded", "ole-zblock-padded")):
                         ctx.t(lab, zst.get(k, 0))
                 if spans:
+                    zspans[tuple(sp)] = spans
                     nst, n = olez.apply_patches_outside(ctx.m, bytes(buf), spans)     # never patch inside compressed bytes
                 else:
                     nst, n = ctx.m.replace_bytes(bytes(buf))
                 if fids and sp[-1].startswith("ISolidWorksInformation"):
-                    nst, n3 = olez.ascii_tail_pass(fids.map, nst)
+                    nst, n3 = olez.ascii_tail_pass(fids.map, nst, spans)
                     n += n3
                 ctx.t("ole-stream:" + sp[-1][:28], n)
                 if nst != st and len(nst) == len(st):
@@ -239,14 +250,19 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
         ctx.m = saved_m
         os.unlink(tmp.name)
     # whatever is left in the container outside streams (directory entry names, slack, mini-stream gaps)
-    out2, n2 = (ctx.m if ctx.m is saved_m else saved_m).replace_bytes(out)
+    try:
+        protect = olez.container_spans(out, zspans)      # container offsets of every compressed block: only rewrite_blocks may change them
+        out2, n2 = olez.patch_container(saved_m, out, protect)
+    except Exception:
+        protect, out2, n2 = None, out, 0
+        ctx.t("ole-outside-exception")
     if n2:
         out = out2
         changed += n2
         ctx.t("ole-outside-streams", n2)
     if file_m is not None:       # the per-file field values in free sectors / slack / directory bytes (never inside stream data)
         try:
-            out3, n3 = olez.patch_unowned(file_m, out)
+            out3, n3 = olez.patch_unowned(file_m, out, protect)
         except Exception:
             out3, n3 = out, 0
         if n3 and len(out3) == len(out):
