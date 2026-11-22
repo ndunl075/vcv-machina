@@ -168,6 +168,10 @@ def _org_in_line(toks: list, out: list):
         if ok and 2 <= len(cand) <= 9:
             v = " ".join(cand).strip(" ,;:.-")
             v = re.sub(r"\s+,", ",", v)
+            if kind == "inst" and "," in v:
+                v = v.split(",")[0].strip()
+            if v.isupper() and kind != "legal":
+                v = ""
             if len(v) >= 6:
                 out.append(("company", v))
         i = end if end > i else i + 1
@@ -219,6 +223,15 @@ def _holder(raw: str):
     while toks and _strip(toks[-1]).lower() in _CONN:
         toks.pop()
     v = " ".join(toks).strip(" ,;:.-")
+    m = re.search(r",\s+(?!(?:Inc|Ltd|LLC|Corp|Co|GmbH|Limited|S\.A|B\.V)\b)", v)
+    if m:
+        v = v[: m.start()]
+    low = [_strip(t).lower().rstrip(".") for t in v.split()]
+    legal_or_inst = any(_is_legal(t) for t in v.split()) or any(w in _INST for w in low)
+    if any(w in _FUNC for w in low) or (v.isupper() and not legal_or_inst) or (len(low) == 1 and low[0] in _d() and not legal_or_inst):
+        return None
+    if low and low[0] in ("development", "publishing", "stroke", "denominacion", "the", "a"):
+        return None
     return v if len(v) >= 3 else None
 
 
