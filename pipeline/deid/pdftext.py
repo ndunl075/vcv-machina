@@ -177,6 +177,7 @@ def _spans(page):
 
 def _label_of(text: str):
     """(kind, inline_value) when the text is a label (optionally 'Label: value'), else None."""
+    text = re.sub(r"\s+\d{1,4}[./-]\d{1,2}[./-]\d{1,4}\s*$", "", text)       # 'Bear. 25.07.22'
     n = _nl(text)
     if n in ALL_LABELS:
         return _LABEL_KIND[n], ""
@@ -312,18 +313,19 @@ def labelled_fields(spans, out: list):
 
 
 # ------------------------------------------------------------------------------------------------ text patterns
-def _caps_run_before(toks, i, maxn=4):
-    """Indices of up to maxn capitalised tokens directly before position i (connector words allowed inside, not at the edge)."""
+def _caps_run_before(toks, i, conn, maxn=4):
+    """Start index of up to maxn capitalised tokens directly before token i (connector words allowed inside, never at the edge;
+    only whitespace, '/' or '-' may separate the tokens)."""
     j = i
     n = 0
-    while j > 0 and n < maxn:
+    while j > 0 and n < maxn and conn[j]:
         t = toks[j - 1]
         tl = t.lower()
         if tl in FUNC:
             break
         if t[0].isupper() or t[0].isdigit():
             j -= 1; n += 1
-        elif tl in _AMP_LOW and j - 2 >= 0 and toks[j - 2][0].isupper():
+        elif tl in _AMP_LOW and j - 2 >= 0 and toks[j - 2][0].isupper() and conn[j - 1]:
             j -= 1; n += 1
         else:
             break
@@ -332,14 +334,23 @@ def _caps_run_before(toks, i, maxn=4):
     return j
 
 
+_KW_ORGANIZATION = {"organization", "organisation", "organizacion", "organización", "organizzazione"}
+
+
 def org_lines(lines, out: list):
     for ln in lines:
         if len(ln) < 6 or len(ln) > 160:
             continue
-        toks = _WORD.findall(ln)
+        ms = list(_WORD.finditer(ln))
+        toks = [m.group(0) for m in ms]
         if len(toks) < 2:
             continue
+        conn = [False] + [bool(re.fullmatch(r"[\s/\-]*", ln[ms[q - 1].end(): ms[q].start()])) for q in range(1, len(ms))] + [False]
         low = [t.lower().strip(".,") for t in toks]
+
+        def sub(a, b):
+            return ln[ms[a].start(): ms[b - 1].end()]
+
         for i, t in enumerate(low):
             if not toks[i][0].isupper():
                 continue
@@ -348,39 +359,60 @@ def org_lines(lines, out: list):
                 if i >= 1:
                     if t in _CASE_SENSITIVE_SUFFIX and not (toks[i].endswith(".") or toks[i] in ("AG", "BV", "SAS", "SPA", "SRL", "PLC", "GBR", "OHG", "PTY")):
                         continue
-                    j = _caps_run_before(toks, i)
+                    j = _caps_run_before(toks, i, conn)
                     if j < i:
-                        cand = " ".join(toks[j:i + 1])
-            elif t in ORG_KW_AFTER:
-                if t in ORG_KW_BEFORE and i + 1 < len(toks):
-                    if low[i + 1] in _CONNECT:
-                        k = i + 2
-                        while k < len(toks) and k < i + 5 and (toks[k][0].isupper() or low[k] in _AMP_LOW):
-                            k += 1
-                        while k > i + 2 and low[k - 1] in _AMP_LOW:
-                            k -= 1
-                        if k > i + 2:
-                            cand = " ".join(toks[i:k])
-                    elif t.startswith(("univers", "institut", "hochschule", "ecole", "école")) and toks[i + 1][0].isupper() and low[i + 1] not in STOP:
-                        cand = " ".join(toks[i:i + 2])
-                if cand is None and i >= 1:
-                    j = _caps_run_before(toks, i, 3)
-                    if j < i:
-                        cand = " ".join(toks[j:i + 1])
+                        cand = sub(j, i + 1)
+            elif t in ORG_KW_AFTER or t in _KW_ORGANIZATION:
+                j = _caps_run_before(toks, i, conn, 3)
+                start, end = (j if j < i else i), i + 1
+                connect = _CONNECT | ({"for"} if t in _KW_ORGANIZATION else set())
+                if (t in ORG_KW_BEFORE or t in _KW_ORGANIZATION) and i + 1 < len(toks) and low[i + 1] in connect and conn[i + 1]:
+                    k = i + 2
+                    while k < len(toks) and k < i + 5 and conn[k] and (toks[k][0].isupper() or low[k] in _AMP_LOW):
+                        k += 1
+                    while k > i + 2 and low[k - 1] in _AMP_LOW:
+                        k -= 1
+                    if k > i + 2:
+                        end = k
+                elif end == i + 1 and start == i and t.startswith(("univers", "institut", "hochschule", "ecole", "école")) and i + 1 < len(toks) and conn[i + 1] and toks[i + 1][0].isupper() and low[i + 1] not in STOP:
+                    end = i + 2
+                if end > start + 1 or start < i:
+                    cand = sub(start, end)
             if not cand:
                 continue
             ws = cand.split()
             for q, w in enumerate(ws):
-                if q and w.lower().strip(".,") in FUNC:
+                if q and w.lower().strip(".,") in FUNC and w.lower().strip(".,") != "for":
                     ws = ws[:q]
                     break
             cand = " ".join(ws).strip(" .,;:-")
             if len(cand) < 8 or not org_like(cand):
                 continue
-            words = [w.lower().strip(".,") for w in cand.split()]
-            body = [w for w in words if w not in ORG_SUFFIX and w not in ORG_KW_AFTER and w not in _AMP_LOW and w not in _CONNECT]
-            if body and (len(body) >= 2 or not (body[0] in STOP or _is_dictionary(body[0]))):
+            words = [w.lower().strip(".,/") for w in re.split(r"[\s/]+", cand)]
+            body = [w for w in words if w not in ORG_SUFFIX and w not in ORG_KW_AFTER and w not in _AMP_LOW and w not in _CONNECT and w not in _KW_ORGANIZATION and w != "for"]
+            if body and (len(body) >= 2 or not (body[0] in STOP or _is_dictionary(body[0])) or words[0] in ORG_KW_BEFORE):
                 out.append(("company", cand))
+
+
+_ORGISH = re.compile(r"(?i)univers|institut|laborator|\blab\b|\blabs\b|college|hochschule|\b(?:inc|ltd|llc|gmbh|corp)\b")
+_NAME_SPLIT = re.compile(r"\s*(?:,|;|&|\band\b|\bund\b|\s[-\u2013]\s)\s*")
+
+
+def names_near_org(lines, out: list):
+    """'First M. Last, First Last' author lines directly next to an organisation / contact line."""
+    for k, ln in enumerate(lines):
+        if not _ORGISH.search(ln) and "@" not in ln:
+            continue
+        for q in range(max(0, k - 2), min(len(lines), k + 3)):
+            if q == k:
+                continue
+            parts = [p for p in _NAME_SPLIT.split(lines[q].strip()) if p]
+            if not (1 <= len(parts) <= 4) or len(lines[q]) > 90:
+                continue
+            ok = all(len(p.split()) >= 2 and re.fullmatch(r"[A-Z][a-zà-ÿ'’-]+(?: [A-Z]\.)?(?: [A-Z][a-zà-ÿ'’-]+){1,2}", p) and person_like(p) for p in parts)
+            if ok:
+                for p in parts:
+                    out.append(("person", p))
 
 
 _NOTICE = re.compile(r"(?i)\b(?:property\s+of|proprietary\s+(?:to|of)|confidential\s+(?:to|property\s+of)|owned\s+by|belongs\s+to|courtesy\s+of|"
@@ -462,5 +494,6 @@ def title_block_candidates(doc, out: list, max_pages: int = MAX_PAGES):
             for g in groups.values():
                 labelled_fields(g, out)
         org_lines(lines, out)
+        names_near_org(lines, out)
         notice_holders(text, out)
         contact_patterns(text, out)
