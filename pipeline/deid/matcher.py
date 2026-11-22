@@ -182,6 +182,9 @@ class Chain:
         self.first, self.second = first, second
 
     max_pat = property(lambda self: max(self.first.max_pat, self.second.max_pat))
+    _nonascii_keys = property(lambda self: self.first._nonascii_keys + self.second._nonascii_keys)
+    str_map = property(lambda self: {**self.second.str_map, **self.first.str_map})
+    _str_keys = property(lambda self: self.first._str_keys + self.second._str_keys)
 
     def patches(self, data):
         p1 = self.first.patches(data)

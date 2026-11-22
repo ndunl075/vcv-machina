@@ -74,11 +74,10 @@ def person_forms(orig: str, pseudo: str):
     return []
 
 
-def text_identities(reg, text: str):
-    """Identities that only the text of one file reveals: e-mail addresses, domains, phone numbers, user-name paths, copyright
-    holders (harvest detectors) and person names (name lists). Pseudonyms: the registry's when it knows the identity, else the
-    deterministic first candidate (same generators, same seed), so every file agrees."""
-    from . import detect, harvest, ident, names
+def text_candidates(text: str) -> list:
+    """Candidate identities (kind, value) that the visible text of one file reveals; shared by apply (text_identities) and harvest-meta so
+    that every identity apply can find has been registered globally first."""
+    from . import detect, harvest, names
     cands: list = []
     try:
         harvest.generic_text_candidates(text, cands)
@@ -92,6 +91,15 @@ def text_identities(reg, text: str):
                 cands.append(("domain", d))
     except Exception:
         return []
+    return cands
+
+
+def text_identities(reg, text: str):
+    """Identities that only the text of one file reveals: e-mail addresses, domains, phone numbers, user-name paths, copyright
+    holders (harvest detectors) and person names (name lists). Pseudonyms: the registry's when it knows the identity, else the
+    deterministic first candidate (same generators, same seed), so every file agrees."""
+    from . import ident
+    cands = text_candidates(text)
     if not cands:
         return []
     tmp = Overlay(reg)          # registered identities come from the registry, the rest from the pure function: no per-file probing

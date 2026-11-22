@@ -122,9 +122,18 @@ def _hm_blob(name, data, out, depth):
             pass
         txt = rewrite._pdf_text(data)
         if txt:
-            harvest.generic_text_candidates(txt, out["cands"])
-            from deid import names
-            out["cands"] += [("person", n) for n in names.find_person_names(txt)]
+            from deid import perfile
+            out["cands"] += perfile.text_candidates(txt)        # exactly the candidates apply looks for in the text
+        try:                                                    # title-block / notice / contact identities of the page layout (deid/pdftext.py)
+            import pymupdf as fitz
+            d = fitz.open(stream=data, filetype="pdf")
+            try:
+                from deid import pdftext
+                pdftext.title_block_candidates(d, out["cands"])
+            finally:
+                d.close()
+        except Exception:
+            pass
     elif kind == "ole":
         import olefile
         try:
