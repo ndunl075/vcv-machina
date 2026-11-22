@@ -318,7 +318,11 @@ def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
         try:
             with pikepdf.open(io.BytesIO(data)) as p0:
                 fids = perfile.FileIds(ctx.reg, fields.pdf_field_values(p0))
-        except Exception:
+            txt = _pdf_text(data)
+            if txt:
+                fids.add_content(perfile.text_identities(ctx.reg, txt))
+        except Exception as e:
+            ctx.notes.append(f"pdf-ids-failed:{type(e).__name__}")
             fids = None
     saved = ctx.m
     try:
@@ -329,14 +333,37 @@ def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
         ctx.m = saved
 
 
-_XMP_FIELD = None
+def _pdf_text(data: bytes, max_pages: int = 80) -> str:
+    """Visible text, link targets and annotation texts of the first pages (for finding e-mail addresses, domains, names)."""
+    try:
+        import pymupdf as fitz
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return ""
+    parts = []
+    try:
+        for i, pg in enumerate(doc):
+            if i >= max_pages:
+                break
+            parts.append(pg.get_text())
+            for lk in pg.get_links():
+                if lk.get("uri"):
+                    parts.append(lk["uri"])
+            for an in pg.annots() or []:
+                c = (an.info or {}).get("content")
+                if c:
+                    parts.append(c)
+    except Exception:
+        pass
+    finally:
+        doc.close()
+    return "\n".join(parts)
 
 
 def _fix_fields(ctx: Ctx, pdf, fids) -> int:
     """Field-level replacement (any length / wording): Info author-style keys, XMP creator-style elements, annotation authors."""
     import pikepdf
     from . import fields
-    global _XMP_FIELD
     n = 0
     for k in fields.INFO_KEYS:
         try:
@@ -496,6 +523,15 @@ def _pdf_visible_fixup(ctx: Ctx, data: bytes, name: str, orig_changed: bool):
         ctx.notes.append("pdf-visible-overlay")
         ctx.t("pdf-visible-overlay", fixed)
         out = doc.tobytes(garbage=0, deflate=True)
+        try:
+            import pikepdf
+            with pikepdf.open(io.BytesIO(data)) as pa, pikepdf.open(io.BytesIO(out)) as pb:
+                ok = len(pa.pages) == len(pb.pages)
+        except Exception:
+            ok = False
+        if not ok:      # never trade pages for a pseudonym: keep the version without overlay
+            ctx.notes.append("pdf-overlay-dropped-pages")
+            return data if orig_changed else None
         return out
     except Exception as e:
         ctx.notes.append(f"pdf-overlay-failed:{type(e).__name__}")

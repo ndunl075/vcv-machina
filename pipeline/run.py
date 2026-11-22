@@ -3,7 +3,7 @@
 Everything is resumable: per-file results live in WORK/ledger.sqlite and WORK/registry.sqlite."""
 import argparse, json, multiprocessing as mp, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from deid import core, harvest, ident, rewrite
+from deid import core, fields, harvest, ident, perfile, rewrite
 from deid.pool import run_pool
 from deid.registry import Registry
 
@@ -105,6 +105,105 @@ def cmd_harvest(a):
     print(f"harvest done: registry has {len(reg.map)} identities in {time.time() - t0:.0f}s")
 
 
+OLE_EXT = (".sldprt", ".sldasm", ".slddrw", ".slddrt", ".sldlfp", ".prtdot", ".asmdot", ".drwdot", ".ipt", ".iam", ".idw", ".ipn", ".dwf",
+           ".par", ".psm", ".asm", ".dft", ".pwd", ".cat", ".sldprt~")
+
+
+def _hm_blob(name, data, out, depth):
+    """Identity field values + text-level candidates of every PDF / OLE container inside one blob."""
+    import io
+    kind = rewrite.sniff(name, data)
+    if kind == "pdf":
+        import pikepdf
+        try:
+            with pikepdf.open(io.BytesIO(data)) as p0:
+                out["fields"] += fields.pdf_field_values(p0)
+        except Exception:
+            pass
+        txt = rewrite._pdf_text(data)
+        if txt:
+            harvest.generic_text_candidates(txt, out["cands"])
+            from deid import names
+            out["cands"] += [("person", n) for n in names.find_person_names(txt)]
+    elif kind == "ole":
+        import olefile
+        try:
+            ole = olefile.OleFileIO(io.BytesIO(data))
+            try:
+                out["fields"] += [x[4] for x in fields.ole_field_slots(ole)]
+            finally:
+                ole.close()
+        except Exception:
+            pass
+    elif kind == "zip" and depth < 3:
+        import zipfile
+        try:
+            z = zipfile.ZipFile(io.BytesIO(data))
+            for info in z.infolist():
+                low = info.filename.lower()
+                if info.is_dir() or info.file_size > (96 << 20) or not (low.endswith(".pdf") or low.endswith(OLE_EXT) or low.endswith((".zip", ".gz"))):
+                    continue
+                _hm_blob(info.filename, z.read(info), out, depth + 1)
+        except Exception:
+            pass
+    elif kind == "gzip" and depth < 3:
+        import gzip
+        try:
+            _hm_blob(name[:-3] if name.lower().endswith(".gz") else name, gzip.decompress(data), out, depth + 1)
+        except Exception:
+            pass
+
+
+def _hm_one(rel):
+    path = os.path.join(core.INPUT, rel)
+    out = {"fields": [], "cands": []}
+    try:
+        size = os.path.getsize(path)
+        if size == 0 or size > (400 << 20):
+            return rel, "skipped", out
+        with open(path, "rb") as f:
+            head = f.read(8)
+        low = rel.lower()
+        kind = rewrite.sniff(rel, head)
+        if kind in ("pdf", "ole") or (kind == "zip" and size <= (250 << 20)) or kind == "gzip":
+            _hm_blob(rel, open(path, "rb").read(), out, 0)
+        return rel, "ok", out
+    except Exception as e:
+        return rel, "error:" + type(e).__name__, out
+
+
+def cmd_harvest_meta(a):
+    """Second, much cheaper harvest over PDF / OLE containers only (also inside zip / gz): identity FIELD values (scope meta) and the
+    text-level identities (e-mail, domain, phone, copyright holder, person names) those files reveal. Resumable."""
+    con = core.ledger()
+    con.execute("CREATE TABLE IF NOT EXISTS harvest_meta(rel TEXT PRIMARY KEY, status TEXT, nfields INTEGER, ncand INTEGER)")
+    reg = Registry(core.REGDB, core.get_seed())
+    rels = list(core.walk_inputs())
+    if a.limit:
+        rels = rels[: a.limit]
+    done = {r for (r,) in con.execute("SELECT rel FROM harvest_meta")} if not a.force else set()
+    todo = [r for r in rels if r not in done]
+    print(f"harvest-meta: {len(rels)} files, {len(todo)} to do", flush=True)
+    t0 = time.time(); cnt = [0]
+
+    def on_res(res):
+        rel, status, out = res
+        for c in fields.field_identities(out["fields"]):
+            reg.meta_pseudonym(c)
+        ident.register_candidates(reg, [c for c in out["cands"] if c[0] != "__attachment__"], source="text")
+        con.execute("INSERT OR REPLACE INTO harvest_meta VALUES(?,?,?,?)", (rel, status, len(out["fields"]), len(out["cands"])))
+        cnt[0] += 1
+        if cnt[0] % 500 == 0:
+            reg.commit(); con.commit()
+            print(f"  {cnt[0]}/{len(todo)}  registry={len(reg.map)}  {cnt[0] / (time.time() - t0):.1f} files/s", flush=True)
+
+    def on_crash(rel):
+        con.execute("INSERT OR REPLACE INTO harvest_meta VALUES(?,?,?,?)", (rel, "crashed", 0, 0)); con.commit()
+    run_pool(_hm_one, todo, a.procs, _init, on_res, on_crash, chunksize=8)
+    reg.commit(); con.commit()
+    print(f"harvest-meta done: registry has {len(reg.map)} identities in {time.time() - t0:.0f}s")
+
+
 _E = None
 
 
@@ -168,7 +267,7 @@ def cmd_survey(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["freeze", "harvest", "apply", "survey", "all"])
+    ap.add_argument("cmd", choices=["freeze", "harvest", "harvest-meta", "apply", "survey", "all"])
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--procs", type=int, default=2, help="worker processes (default 2; raise for the full run)")
     ap.add_argument("--force", action="store_true")
@@ -177,6 +276,8 @@ def main():
         print("frozen file list:", core.freeze_list(), "complete files ->", core.FILELIST)
     if a.cmd in ("harvest", "all"):
         cmd_harvest(a)
+    if a.cmd in ("harvest-meta", "all"):
+        cmd_harvest_meta(a)
     if a.cmd in ("apply", "all"):
         cmd_apply(a)
     if a.cmd == "survey":

@@ -162,13 +162,18 @@ def reg_fingerprint(reg: Registry) -> str:
     return h.hexdigest()[:12]
 
 
+# Registered from folder names but ordinary engineering words: replacing them inside drawings and models would destroy non-identifying text
+NEVER_IN_CONTENT = {"parts", "part", "resources", "holders", "users", "models", "files", "drawings", "assemblies", "components", "docs",
+                    "documents", "projects", "tools", "designs", "sources", "library", "libraries", "master", "main", "test", "tests", "data"}
+
+
 class Engine:
     """Loaded read-only registry + matchers; one per worker process."""
     def __init__(self):
         self.reg = Registry(REGDB, get_seed(), readonly=True)
         # content identities (scope "all") are replaced everywhere, in paths too; "path"-scope identities (generic-looking owner/repo
         # names such as a repo called "models") are only replaced as the whole <owner>__<repo> root folder, never inside other paths
-        content = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "all"]
+        content = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "all" and o.lower() not in NEVER_IN_CONTENT]
         for o in list(self.reg.map):     # 'Last, First' / 'Last First' orderings of two-token person names
             k, p = self.reg.map[o]
             a, b = o.split(" "), p.split(" ")

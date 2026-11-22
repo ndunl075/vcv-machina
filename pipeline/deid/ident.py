@@ -9,7 +9,9 @@ github.com gitlab.com bitbucket.org githubusercontent.com example.com example.or
 microsoft.com adobe.com w3.org apache.org gnu.org freecadweb.org freecad.org opencascade.com iso.org nist.gov khronos.org python.org
 openscad.org inkscape.org creativecommons.org mozilla.org wikipedia.org google.com schemas.microsoft.com purl.org dublincore.org
 sourceforge.net readthedocs.io npmjs.com pypi.org stackoverflow.com youtube.com facebook.com twitter.com linkedin.com instagram.com
-ptc.com siemens.com dassault.com 3ds.com catia.com kicad.org altium.com ansys.com""".split())
+ptc.com siemens.com dassault.com 3ds.com catia.com kicad.org altium.com ansys.com doi.org orcid.org arxiv.org amazon.com amazon.de ebay.com alibaba.com
+aliexpress.com europa.eu sourceforge.net huggingface.co researchgate.net grabcad.com thingiverse.com printables.com mcmaster.com
+creativecommons.org osf.io hackaday.io instructables.com""".split())
 
 COMPANY_WORDS = re.compile(r"(?i)\b(inc|ltd|llc|gmbh|corp|corporation|co|company|ag|bv|sa|sarl|srl|spa|oy|ab|as|plc|university|universit[a-z]*|institute|"
                            r"college|school|labs?|laboratory|technologies|technology|systems|industries|engineering|robotics|group|foundation|"

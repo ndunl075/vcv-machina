@@ -6,8 +6,9 @@ from __future__ import annotations
 import re
 from . import fields
 from .matcher import Matcher
-from .registry import _case_like
+from .registry import _case_like, Registry
 
+_BARE_TLDS = {"com", "net", "org", "io", "de", "uk", "fr", "nl", "se", "ch", "eu", "info", "edu", "gov", "dev", "ai", "app", "biz", "us", "ca", "au"}
 _AL = "A-Za-z0-9À-￿"
 
 
@@ -25,6 +26,15 @@ class FileIds:
         self.m = Matcher(content, min_len=4) if content else None              # page text and the like
         allv = [(o, p) for o, p in self.map.values() if len(o) >= 4]
         self.m_all = Matcher(allv, min_len=4) if allv else None                # binary stream of OLE containers (whole tokens)
+
+    def add_content(self, pairs):
+        """More (original, pseudonym) pairs for page text / stream content (emails, domains, names found in the file's own text)."""
+        pairs = [(o, p) for o, p in pairs if o != p and len(o) == len(p)]
+        if not pairs:
+            return
+        have = {o for o, _ in self.map.values()}
+        base = [(o, p) for o, p in self.map.values() if fields.content_safe(o)]
+        self.m = Matcher(base + [x for x in pairs if x[0] not in have], min_len=4)
 
     def __bool__(self):
         return bool(self.map)
@@ -49,3 +59,60 @@ class FileIds:
         while len(b) < nbytes:
             b += "x".encode(enc)
         return b[:nbytes]
+
+
+def person_forms(orig: str, pseudo: str):
+    """Other spellings of a 'First [M.] Last' name that must map consistently: 'Last, First', 'Last First', 'F. Last'."""
+    a, b = orig.split(" "), pseudo.split(" ")
+    if len(a) == 2 and len(b) == 2 and all(a) and all(b):
+        return [(f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"), (f"{a[1]} {a[0]}", f"{b[1]} {b[0]}"), (f"{a[0][0]}. {a[1]}", f"{b[0][0]}. {b[1]}")]
+    if len(a) == 3 and len(b) == 3 and all(a) and all(b):
+        return [(f"{a[0]} {a[2]}", f"{b[0]} {b[2]}"), (f"{a[0][0]}. {a[2]}", f"{b[0][0]}. {b[2]}")]
+    return []
+
+
+def text_identities(reg, text: str):
+    """Identities that only the text of one file reveals: e-mail addresses, domains, phone numbers, user-name paths, copyright
+    holders (harvest detectors) and person names (name lists). Pseudonyms: the registry's when it knows the identity, else the
+    deterministic first candidate (same generators, same seed), so every file agrees."""
+    from . import detect, harvest, ident, names
+    cands: list = []
+    try:
+        harvest.generic_text_candidates(text, cands)
+        for n in names.find_person_names(text):
+            cands.append(("person", n))
+        for d in detect.find_domains(text):       # bare host names ('example.org/wiki'): common registries only, label of 4+ letters
+            dl = d.lower()
+            tld = dl.rsplit(".", 1)[-1]
+            lab = dl.split(".")[-2] if "." in dl else ""
+            if tld in _BARE_TLDS and len(lab) >= 4 and re.search(r"[a-z]{3}", lab):
+                cands.append(("domain", d))
+    except Exception:
+        return []
+    if not cands:
+        return []
+    tmp = Registry(":memory:", reg.seed)
+    try:
+        ident.register_candidates(tmp, cands, source="text")
+        out = []
+        for o, (k, p) in tmp.map.items():
+            g = reg.map.get(o)
+            if g is not None and reg.scope.get(o) == "all":
+                continue                      # the global matcher already handles it
+            pp = g[1] if g is not None else p
+            out.append((o, pp))
+            if k == "person":
+                out.extend(person_forms(o, pp))
+        # the exact spellings used in this text (host names and e-mail addresses are case-insensitive: 'Example.Org')
+        known = {o for o, _ in out}
+        for o, pp in list(out):
+            if len(o) < 5:
+                continue
+            for m in re.finditer(re.escape(o), text, re.I):
+                sp = m.group(0)
+                if sp not in known:
+                    known.add(sp)
+                    out.append((sp, pp.lower() if not sp.isupper() else pp.upper()))
+        return out
+    finally:
+        tmp.con.close()
