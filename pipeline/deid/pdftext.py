@@ -61,7 +61,7 @@ mirror support illumination oberflächengüte qualität produktion genehmigt gep
 masstab kontrolliert kontroll kontrolle comments comment aprovado aprobado conjunt vistes vistas vista angolare fatto qualita qualità grupa kurbelwelle controllato verificato
 revisado revisat comprovat dibuixat dissenyat disegnato getekend gecontroleerd goedgekeurd freigegeben genehmigt gezeichn bearbeitet erstellt geändert angle quality surface
 cantidad quantità aantal materiaal materiale tratamiento trattamento acabado finitura toleranz allgemeintoleranz masse massa gewichte peso tolleranze tolerancias
-impressió impressio document format full versió versio plànol conjunt part extrusor hotend
+referència referencia referencias impressió impressio document format full versió versio plànol conjunt part extrusor hotend
 revisions release released initial changes change history list bom parts material finish quantity per unit""".split())
 STOP |= set(w for w in detect.SOFTWARE_WORDS if " " not in w)
 
@@ -108,6 +108,10 @@ def _tokens(v: str):
 _NOUNISH = re.compile(r"(?:ung|ungen|keit|heit|schaft|welle|platte|flansch|halter|deckel|stift|lager|zahnrad|zahnkranz|achse|gehäuse|gehause|stück|stuck|ado|ido|ción|cion|sión|ment|ités?|ità|iert|ierte|ierung|tion|tions|zione|mento|ació|aire|eur|issima|ica|ico|ica|ismo|abel|ular|atge|ents?|lik|ski)$")
 
 
+_PERSON_BAD = set("""centre center research design services service plate cage bar bolt short model tools tool systems group lab labs institute university college school
+department academy press printing printer engineering technology technologies solutions machine machines assembly cover support holder bracket housing shaft screw nut""".split())
+
+
 def person_like(v: str) -> bool:
     """True for a plausible full person name / user name (not initials, not a title-block word)."""
     v = v.strip().strip(".,;:/\\()[]'\"")
@@ -124,11 +128,13 @@ def person_like(v: str) -> bool:
         return False
     if any(len(w) >= 2 and w.isupper() for w in words) and not v.isupper():
         return False
+    if v.count("-") > 1 or len(v) > 32:
+        return False
     if detect.is_generic_person(v):
         return False
     if len(words) == 1:
         w = words[0]
-        if len(w) < 5 or _is_dictionary(w) or _NOUNISH.search(w.lower()):
+        if len(w) < 5 or len(w) > 13 or _is_dictionary(w) or _NOUNISH.search(w.lower()) or re.search(r"(?:are|ere|ire)$", w.lower()):
             return False
         return True
     # several words: each word must look like a name part
@@ -136,8 +142,12 @@ def person_like(v: str) -> bool:
         if not (w[0].isupper() or w.islower() and len(toks) == len(words) and False):
             if not (w.lower() in ("van", "von", "de", "der", "den", "del", "da", "di", "le", "la", "dos", "da", "bin", "al", "el", "ter", "ten", "mc")):
                 return False
-    nondict = [w for w in words if not _is_dictionary(w)]
-    if nondict or low[0] in _first_names():
+    # no drawing / organisation noun among the words, and at least one word that is not a dictionary word (or a known first name)
+    for w in words:
+        wl = w.lower().strip("-'’")
+        if wl in _PERSON_BAD or _NOUNISH.search(wl):
+            return False
+    if any(not _is_dictionary(w) for w in words) or low[0] in _first_names():
         return True
     return False
 
@@ -259,7 +269,9 @@ def project_like(v: str) -> bool:
     raw = [t for t in re.split(r"[\s]+", v) if t]
     if sum(1 for t in raw if t.islower()) >= 3 or "XXX" in v.upper() or toks[0] in ("data", "name", "nom", "nombre"):
         return False
-    if len(raw) == 1 and not (re.search(r"\d", v) or re.search(r"[a-z][A-Z]", v) or v.isupper()):
+    if not any(re.search(r"\d", t) or re.search(r"[a-z][A-Z]", t) or (t.isupper() and len(t) >= 3) for t in raw):
+        return False
+    if re.match(r"(?i)^[mM]\d|^\d+\s?(?:x|mm|in)\b", v) or any(t.lower() in ("hole", "tapped", "thread", "threaded", "properties", "edit", "tolerance", "tolerances") for t in raw):
         return False
     if re.search(r"(?i)yyyy|mm/dd|\bdd/|^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", v) or len(toks) > 5:
         return False
@@ -449,7 +461,7 @@ _BARE_DOMAIN = re.compile(r"(?<![\w@./-])((?:[A-Za-z0-9][A-Za-z0-9-]{2,}\.)+(?:c
 _INTL_PHONE = re.compile(r"(?<![\w.])(\+\d{1,3}[ -]?\(?\d{1,4}\)?(?:[ -]\d{2,5}){2,4})(?![\d.])")
 _US_PHONE = re.compile(r"(?<![\w.])(\(\d{3}\)\s?\d{3}[-.\s]\d{4})(?![\d])")
 _STREET_EN = re.compile(r"\b(\d{1,5}\s+(?:[A-Z][a-z]+\s+){1,3}(?:Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Drive|Lane|Way|Court|Parkway))\b\.?")
-_STREET_DE = re.compile(r"\b([A-ZÄÖÜ][a-zäöüß]{3,}(?:straße|strasse|str\.|weg|platz|allee|gasse|ring|damm)\s+\d{1,4}[a-z]?)\b")
+_STREET_DE = re.compile(r"\b([A-ZÄÖÜ][a-zäöüß]{3,}(?:straße|strasse|str\.|weg|platz|allee|gasse)\s+\d{1,4}[a-z]?)\b")
 
 
 def contact_patterns(text: str, out: list):
