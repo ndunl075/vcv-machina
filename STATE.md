@@ -1,3 +1,10 @@
+# STATE att4 (branch att4, from fix1 cdf4466 + pdftext merged)
+- Pseudonyms: registered identities come from the registry; unregistered ones are a pure function of (seed, kind, normalised original) probing only against
+  the (read-only, identical on every slice) registry: Registry._pure, Overlay (per-file text identities), case-insensitive twins share one pseudonym.
+- Chain matcher scans the original once (per-file matches win), path matcher keeps NEVER_IN_CONTENT words, OLE m_all uses content_safe, _sub cannot KeyError.
+- harvest-meta registers the same text candidates apply finds (perfile.text_candidates) plus pdftext title-block identities. Full run: 4,831 -> 6,886 identities (224 s, 4 procs).
+- cloud/registry.enc repacked from that registry.
+
 # STATE (worker mac-fix, branch fix1) - updated after the harvest-meta timing test
 
 ## Diagnosis so far (rates measured on a 300-PDF / 150-OLE sample over many source folders; full-corpus metadata scan of 10,253 PDF + 10,965 OLE where noted)
