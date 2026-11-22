@@ -63,11 +63,19 @@ def classify_person_or_company(v: str) -> str:
     return "account"
 
 
+def valid_domain(d: str) -> bool:
+    """A real host name: at least two labels, last label (or last two, e.g. co.uk) a known TLD, label characters only."""
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", d):
+        return False
+    labels = d.split(".")
+    return labels[-1] in detect.TLDS or ".".join(labels[-2:]) in detect.TLDS
+
+
 def add_email(reg: Registry, local: str, domain: str, source: str):
     """Register an e-mail address: local part -> account-style pseudonym, registered domain -> domain pseudonym
     (public mail / vendor domains keep their domain). Both parts stay consistent with their stand-alone entries."""
     full = f"{local}@{domain}"
-    if len(local) < 3 or reg.readonly or full in reg.map:
+    if len(local) < 3 or reg.readonly or full in reg.map or not valid_domain(domain.lower()):
         return
     d = domain.lower()
     sub, rd = split_domain(d)
@@ -122,6 +130,8 @@ def register_candidates(reg: Registry, cands: list[tuple], source: str = ""):
                 add_email(reg, local, dom, source)
         elif kind == "domain":
             d = v.lower()
+            if not valid_domain(d):
+                continue
             sub, rd = split_domain(d)
             if rd in PUBLIC_DOMAINS or d in PUBLIC_DOMAINS or len(rd) < 6:
                 continue
@@ -131,15 +141,22 @@ def register_candidates(reg: Registry, cands: list[tuple], source: str = ""):
             if 7 <= len(digits) <= 15:
                 reg.pseudonym(v, "phone", source)
         elif kind == "userpath":
+            if re.search(r"[a-z][A-Z][a-z]", v):
+                continue
             if v.lower() not in detect.GEN_USERS and not detect.is_generic_person(v):
                 reg.pseudonym(v, "account", source, scope="path" if is_generic_phrase(v) else "all")
         elif kind in ("person", "author"):
             if detect.is_generic_person(v) or "\n" in v:
                 continue
+            if "@" in v:       # "Name (user@host.tld)" -> register the e-mail(s) and the name part separately
+                for l, d in detect.find_emails(v):
+                    add_email(reg, l, d, source)
+                v = re.sub(r"\s*[(<\[]?\s*[\w.+-]+@[\w.-]+\s*[)>\]]?", "", v).strip(" ,;()<>")
+                if len(v) < 5 or not plausible("person", v):
+                    continue
             k = classify_person_or_company(v)
             if k == "email":
-                local, _, dom = v.partition("@")
-                add_email(reg, local, dom, source)
+                continue
             elif is_generic_phrase(v) and k != "company":
                 continue
             else:

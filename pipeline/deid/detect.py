@@ -10,7 +10,11 @@ EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]{1,64})@((?:[A-Za-z0-9-]{1,
 DOMAIN_RE = re.compile(r"(?<![\w@.-])((?:[A-Za-z0-9][A-Za-z0-9-]{0,62}\.)+(?:%s))(?![\w-])" % _TLD_ALT, re.I)
 URL_RE = re.compile(r"\b(?:https?|ftp)://[^\s'\"<>)\]]+", re.I)
 PHONE_RE = re.compile(r"(?i)\b(?:tel(?:ephone)?|phone|fax|mobile|mob|cell|gsm)\b\.?\s*[:=]?\s*(\+?\d[\d\s().\-/]{6,18}\d)")
-COPY_RE = re.compile(r"(?i)(?:copyright\s*(?:\(c\)|©)?|©|\(c\))\s*(?:\d{4}(?:\s*[-,–]\s*\d{4})*\s*)?(?:by\s+)?([A-Z][^\n\r<>|*\"]{2,60}?)(?=\s*(?:[.,;<\n\r]|all rights|\*/|$))")
+COPY_RE = re.compile(r"(?:[Cc]opyright|COPYRIGHT)\s*(?:\([cC]\)|\u00a9)?\s*(?:\d{4}(?:\s*[-,\u2013]\s*\d{4})*\s*)?(?:by\s+)?"
+                     r"|(?:\u00a9|\([cC]\))\s*(?:\d{4}(?:\s*[-,\u2013]\s*\d{4})*\s*)(?:by\s+)?")
+_HOLDER = re.compile(r"([A-Z\u00c0-\u00dc][^\n\r<>|*\"]{2,60}?)(?=\s*(?:[.,;<\n\r]|[Aa]ll rights|\*/|$))")
+HOLDER_BAD_FIRST = {"all", "the", "free", "notice", "holder", "owner", "protected", "information", "by", "of", "and", "in", "this", "owned",
+                    "for", "to", "or", "is", "a", "an", "as", "with", "see", "license", "licence", "permission", "statement", "law", "laws"}
 USERPATH_RE = re.compile(r"(?:(?<![\w])/(?:home|Users)/|[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/])([A-Za-z0-9._ -]{2,32}?)(?=[\\/])")
 GEN_USERS = {"user", "users", "admin", "administrator", "root", "public", "default", "guest", "shared", "owner", "pi", "ubuntu", "test",
              "student", "all users", "default user", "runner", "build", "vagrant", "docker", "tmp", "temp", "home", "nobody", "share", "pc", "laptop",
@@ -58,9 +62,16 @@ def find_user_paths(text: str):
 def find_copyright_holders(text: str):
     out = []
     for m in COPY_RE.finditer(text):
-        h = m.group(1).strip(" .,;:-")
-        if len(h) >= 3 and not is_generic_person(h) and h.lower() not in ("the authors", "the author", "contributors", "the contributors"):
-            out.append(h)
+        hm = _HOLDER.match(text, m.end())
+        if not hm:
+            continue
+        h = hm.group(1).strip(" .,;:-")
+        toks = h.split()
+        if len(h) < 5 or len(toks) > 6 or toks[0].lower() in HOLDER_BAD_FIRST or is_generic_person(h):
+            continue
+        if h.lower() in ("the authors", "the author", "contributors", "the contributors"):
+            continue
+        out.append(h)
     return out
 
 
