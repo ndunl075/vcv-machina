@@ -58,9 +58,12 @@ def _co(lvl, mem, strat):
     return zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
 
 
+_BIG = object()
+
+
 def _inflate_at(mv, s, n):
-    """(plaintext, end_offset) of the complete zlib stream starting at s, or None (incomplete, corrupt, or inflating past MAX_INFLATE).
-    Fed in bounded chunks so neither the output nor the unused_data copies can blow up."""
+    """(plaintext, end_offset) of the complete zlib stream starting at s; None when incomplete or corrupt; _BIG when it inflates
+    past MAX_INFLATE (a real block we cannot handle). Fed in bounded chunks."""
     dec = zlib.decompressobj()
     out, total, pos, chunk = [], 0, s, 8192
     while pos < n:
@@ -69,7 +72,7 @@ def _inflate_at(mv, s, n):
         total += len(x)
         out.append(x)
         if total > MAX_INFLATE or dec.unconsumed_tail:
-            return None
+            return _BIG
         if dec.eof:
             return b"".join(out), pos + len(piece) - len(dec.unused_data)
         pos += len(piece)
@@ -77,36 +80,51 @@ def _inflate_at(mv, s, n):
     return None
 
 
-def find_blocks(d: bytes):
-    """[(start, end, plaintext)] of non-overlapping complete zlib streams in d (bounded: probes, full attempts, seconds, blocks)."""
+def find_blocks_ex(d: bytes):
+    """([(start, end, plaintext)], [(start, end)] unscanned/unhandled tail spans). Whenever the scan stops early (probe / failed-inflate /
+    block / time caps, an over-large block, a stream over MAX_STREAM) the rest of the stream is returned as a protected span."""
     out = []
     if len(d) > MAX_STREAM:
-        return out
+        return out, [(0, len(d))]
     mv = memoryview(d)
     i = 0
-    probes = full = 0
+    probes = failed = 0
     t_end = time.monotonic() + SCAN_SECS
-    while len(out) < SCAN_MAX_BLOCKS:
+    while True:
+        if len(out) >= SCAN_MAX_BLOCKS:
+            return out, ([(i, len(d))] if _HDR.search(d, i) else [])
         m = _HDR.search(d, i)
         if not m:
-            break
-        probes += 1
-        if probes > SCAN_MAX_PROBES or full > SCAN_MAX_FULL or (probes & 255 == 0 and time.monotonic() > t_end):
-            break
+            return out, []
         s = m.start()
+        probes += 1
+        if probes > SCAN_MAX_PROBES or failed > SCAN_MAX_FULL or time.monotonic() > t_end:
+            return out, [(s, len(d))]
         try:
-            probe = zlib.decompressobj()
-            probe.decompress(mv[s:s + 512], 1 << 14)           # cheap rejection of false headers
-            full += 1
-            r = _inflate_at(mv, s, len(d))
+            zlib.decompressobj().decompress(mv[s:s + 512], 1 << 14)           # cheap rejection of false headers
+            passed = True
         except Exception:
-            r = None
+            passed = False
+        r = None
+        if passed:
+            try:
+                r = _inflate_at(mv, s, len(d))
+            except Exception:
+                r = None
+            if r is None:
+                failed += 1                          # only FAILED full inflates count against SCAN_MAX_FULL
+        if r is _BIG:
+            return out, [(s, len(d))]
         if r is None:
             i = s + 1
             continue
         out.append((s, r[1], r[0]))
         i = r[1]
-    return out
+
+
+def find_blocks(d: bytes):
+    """[(start, end, plaintext)] of non-overlapping complete zlib streams in d (bounded, see find_blocks_ex)."""
+    return find_blocks_ex(d)[0]
 
 
 def _fit_candidates(plain: bytes, total: int, params=None, splits=True):
@@ -255,8 +273,9 @@ def refit(block: bytes, plain: bytes, budget_secs: float | None = None):
 def rewrite_blocks(d: bytes, matcher, file_budget=None):
     """(new_bytes, stats, block_spans). stats: rewritten / nofit / failed / blocks / pads. Stream length never changes."""
     st = {"blocks": 0, "rewritten": 0, "nofit": 0, "failed": 0, "padded": 0}
-    blocks = find_blocks(d)
-    spans = [(s, e) for s, e, _ in blocks]
+    blocks, tails = find_blocks_ex(d)
+    spans = [(s, e) for s, e, _ in blocks] + tails
+    st["protected_tail"] = len(tails)
     if not blocks:
         return d, st, spans
     out = bytearray(d)

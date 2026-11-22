@@ -228,7 +228,7 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                     if len(zb) == len(buf):
                         buf = bytearray(zb)
                     for k, lab in (("rewritten", "ole-zblock-rewritten"), ("nofit", "ole-zblock-nofit"), ("failed", "ole-zblock-failed"),
-                                   ("padded", "ole-zblock-padded")):
+                                   ("padded", "ole-zblock-padded"), ("protected_tail", "ole-zblock-protected-tail")):
                         ctx.t(lab, zst.get(k, 0))
                 if spans:
                     zspans[tuple(sp)] = spans
@@ -256,6 +256,7 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
     except Exception:
         protect, out2, n2 = None, out, 0
         ctx.t("ole-outside-exception")
+        file_m = None                    # no block map: leave the container as written by the per-stream pass
     if n2:
         out = out2
         changed += n2

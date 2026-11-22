@@ -99,6 +99,42 @@ def test_find_blocks_bounded():
     assert time.time() - t < 15
 
 
+def test_n1_many_blocks_and_protected_tail():
+    olez.SCAN_MAX_BLOCKS_SAVE = olez.SCAN_MAX_BLOCKS
+    blocks = [zlib.compress(b"row %d secretname" % i, 0) for i in range(1000)]
+    d = b"".join(blocks)
+    got = olez.find_blocks(d)
+    assert len(got) == 1000, len(got)                       # successful blocks no longer count against the failed-inflate cap
+    olez.SCAN_MAX_BLOCKS = 10
+    try:
+        bl, tails = olez.find_blocks_ex(d)
+        assert len(bl) == 10 and tails == [(bl[-1][1], len(d))], (len(bl), tails)
+        # a stored block past the cap stays byte-identical through the raw passes
+        stream = d + b"\0" * 5000
+        cfb = make_cfb(stream)
+        o = olefile.OleFileIO(cfb)
+        data = o.openstream("Data").read()
+        bl, tails = olez.find_blocks_ex(data)
+        prot = olez.container_spans(cfb, {("Data",): [(s, e) for s, e, _ in bl] + tails})
+        out, n = olez.patch_container(Matcher([("secretname", "pseudoname")]), cfb, prot)
+        d2 = olefile.OleFileIO(out).openstream("Data").read()
+        assert d2[:len(d)] == d and n == 0
+    finally:
+        olez.SCAN_MAX_BLOCKS = olez.SCAN_MAX_BLOCKS_SAVE
+
+
+def test_n1_oversize_block_protected():
+    old = olez.MAX_INFLATE
+    olez.MAX_INFLATE = 1000
+    try:
+        big = zlib.compress(b"secretname " * 500, 0)
+        d = b"\0\0" + big + b"tail"
+        bl, tails = olez.find_blocks_ex(d)
+        assert bl == [] and tails and tails[0][1] == len(d) and tails[0][0] <= 2
+    finally:
+        olez.MAX_INFLATE = old
+
+
 if __name__ == "__main__":
     for k, v in sorted(globals().items()):
         if k.startswith("test_"):
