@@ -88,6 +88,17 @@ for p, note in fallback[:300]:
     w(f"    {p}  [{note[:100]}]")
 if not fallback:
     w("    (none)")
+unrep = os.path.join(core.WORK, "unrepresentable.tsv")
+w("  Files whose names cannot be stored on the build machine's filesystem (APFS rejects some code points in the name; 3 of 188,722 input files,")
+w("  all inside one SolidWorks repository folder). The bytes were fetched separately, de-identified like every other file and written under the")
+w("  closest legal name (each rejected character replaced by an underscore); they are NOT at their original path. Final paths:")
+if os.path.exists(unrep):
+    for line in open(unrep, encoding="utf-8", errors="replace"):
+        f = line.rstrip("\n").split("\t")
+        if len(f) >= 3:
+            w(f"    {f[1] or '(not produced)'}  [{f[2]}]")
+else:
+    w("    (list not generated)")
 w("""
 5. No credentials, raw input, private mapping, seed or run log are included in this submission.
 """)
