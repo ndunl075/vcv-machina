@@ -176,19 +176,63 @@ class Matcher:
 
 
 class Chain:
-    """Per-file matcher followed by the global one, same interface as Matcher for the calls the rewriters make."""
+    """Per-file matcher plus the global one, same interface as Matcher for the calls the rewriters make. Both automata scan the ORIGINAL
+    data and the per-file matches win where they overlap, so a pseudonym that happens to equal a registered original is never rewritten again."""
     def __init__(self, first, second):
         self.first, self.second = first, second
 
+    max_pat = property(lambda self: max(self.first.max_pat, self.second.max_pat))
+
+    def patches(self, data):
+        p1 = self.first.patches(data)
+        if not p1:
+            return self.second.patches(data)
+        spans = sorted((o, o + len(r)) for o, r in p1)
+        out = list(p1)
+        import bisect
+        starts = [a for a, _ in spans]
+        for o, r in self.second.patches(data):
+            e = o + len(r)
+            i = bisect.bisect_right(starts, o) - 1
+            if (i >= 0 and spans[i][1] > o) or (i + 1 < len(spans) and spans[i + 1][0] < e):
+                continue
+            out.append((o, r))
+        return sorted(out)
+
     def replace_bytes(self, data):
-        data, n1 = self.first.replace_bytes(data)
-        data, n2 = self.second.replace_bytes(data)
-        return data, n1 + n2
+        pt = self.patches(data)
+        if not pt:
+            return data, 0
+        out = bytearray(data)
+        last = -1
+        n = 0
+        for o, r in pt:
+            if o < last:          # equal-length patches of the same automaton never overlap; belt and braces
+                continue
+            out[o:o + len(r)] = r
+            last = o + len(r)
+            n += 1
+        return bytes(out), n
 
     def replace_str(self, s):
-        s, n1 = self.first.replace_str(s)
-        s, n2 = self.second.replace_str(s)
-        return s, n1 + n2
+        if not s:
+            return s, 0
+        if self.first._nonascii_keys or self.second._nonascii_keys:      # str-only (non-ASCII) originals: sequential, rare
+            s, n1 = self.first.replace_str(s)
+            s, n2 = self.second.replace_str(s)
+            return s, n1 + n2
+        b = s.encode("utf-8", "surrogatepass")
+        # UTF-16 patches do not apply to a text string: UTF-8 ones only
+        p1 = self.first._patches(b, self.first.ac8, self.first.rep8, self.first.need_b8, False)
+        p2 = self.second._patches(b, self.second.ac8, self.second.rep8, self.second.need_b8, False)
+        spans = [(o, o + len(r)) for o, r in p1]
+        out = list(p1) + [(o, r) for o, r in p2 if not any(a < o + len(r) and o < e for a, e in spans)]
+        if not out:
+            return s, 0
+        buf = bytearray(b)
+        for o, r in sorted(out):
+            buf[o:o + len(r)] = r
+        return buf.decode("utf-8", "surrogatepass"), len(out)
 
     def find_str(self, s):
         return self.first.find_str(s) + self.second.find_str(s)

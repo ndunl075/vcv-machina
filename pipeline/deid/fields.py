@@ -26,6 +26,9 @@ GENERIC_CONTENT = {"administrator", "admin", "user", "users", "owner", "operator
                    "nx", "unknown", "anonymous", "none", "support", "service", "office", "home", "work", "main", "mechanical", "design",
                    "engineering", "windows", "mac", "dell", "hp", "lenovo", "cad", "draw", "drawing", "cncs", "autocad", "solidworks",
                    "inventor", "creo", "catia", "autodesk", "dassault", "microsoft", "adobe", "unnamed", "noname", "sample", "temp"}
+# generic but account-like field values that may still be replaced as whole tokens in the binary streams of an OLE container
+# (a product or vendor name such as "Autodesk" or "Inventor" as an author never is)
+ACCOUNT_LIKE = {"administrator", "admin", "owner", "operator", "guest", "student", "root", "users", "user"}
 
 
 # ------------------------------------------------------------------------------------------------------ OLE property sets

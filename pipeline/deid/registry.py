@@ -341,17 +341,21 @@ def norm_key(original: str) -> str:
 
 
 class Registry:
-    """Thread-safe-ish registry. `readonly=True` for pass 2 workers (no DB writes, falls back to pure function)."""
+    """Thread-safe-ish registry. `readonly=True` for apply workers (no DB writes): an identity that is not registered gets a pseudonym that is a
+    pure function of (seed, kind, normalised original) and of the registry contents (probing past used pseudonyms / registered originals), so it
+    is the same in every file, every slice and every order. Identities that discovery can find are all registered by the harvest passes."""
 
     def __init__(self, db_path: str, seed: bytes, readonly: bool = False):
         self.seed = seed
         self.db_path = db_path
         self.readonly = readonly
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.map: dict[str, tuple[str, str]] = {}       # norm original -> (kind, pseudonym)
-        self.scope: dict[str, str] = {}                  # norm original -> "all" | "path"
+        self.scope: dict[str, str] = {}                  # norm original -> "all" | "path" | "meta"
         self.used: set[str] = set()                      # lowercase pseudonyms in use
         self.rev: dict[str, str] = {}
+        self._ci: dict[str, str] = {}                    # lower-case original -> registered spelling (scope "all" preferred)
+        self._pure_cache: dict = {}
         self.con = sqlite3.connect(db_path, timeout=60)
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("""CREATE TABLE IF NOT EXISTS identity(
@@ -365,9 +369,57 @@ class Registry:
             self.con.close()
             self.con = None
         self._originals_lower = {o.lower() for o in self.map}
+        self._rebuild_ci()
+
+    def _rebuild_ci(self):
+        self._ci = {}
+        for o in self.map:
+            self._ci_add(o)
+
+    def _ci_add(self, key: str):
+        lo = key.lower()
+        cur = self._ci.get(lo)
+        if cur is None or (self.scope.get(key) == "all" and self.scope.get(cur) != "all"):
+            self._ci[lo] = key
+
+    def _put(self, key: str, kind: str, p: str, scope: str, source: str):
+        """The single place that adds an identity (memory + DB)."""
+        self.map[key] = (kind, p)
+        self.scope[key] = scope
+        self.used.add(p.lower())
+        self._originals_lower.add(key.lower())
+        self._ci_add(key)
+        if self.con is not None:
+            self.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (key, kind, p, source, scope))
+
+    def _pure(self, kind: str, key: str) -> str:
+        """Pseudonym of an unregistered identity: pure function of (seed, kind, key) and the registry contents (the first candidate that is
+        neither a used pseudonym nor a registered original). No per-file or per-order state, so every file and slice agrees."""
+        ck = (kind, key)
+        r = self._pure_cache.get(ck)
+        if r is not None:
+            return r
+        gen = GEN.get(kind, gen_account)
+        lo = key.lower()
+        r = None
+        for probe in range(0, 200):
+            p = gen(self.seed, key, probe)
+            pl = p.lower()
+            if pl != lo and pl not in self.used and pl not in self._originals_lower:
+                r = p
+                break
+        if r is None:
+            r = gen(self.seed, key, 0)
+        self._pure_cache[ck] = r
+        return r
 
     def get(self, original: str):
         return self.map.get(norm_key(original))
+
+    def lookup_ci(self, original: str):
+        """(registered spelling, kind, pseudonym) of an identity under any capitalisation, or None."""
+        t = self._ci.get(norm_key(original).lower())
+        return (t,) + self.map[t] if t is not None else None
 
     def pseudonym(self, original: str, kind: str = "other", source: str = "", scope: str = "all") -> str:
         """Return the pseudonym for original, creating it (collision-free) when this registry is writable."""
@@ -380,13 +432,25 @@ class Registry:
                 self.scope[key] = "all"
                 self.con.execute("UPDATE identity SET scope='all' WHERE original=?", (key,))
             return hit[1]
-        gen = GEN.get(kind, gen_account)
         with self.lock:
             hit = self.map.get(key)
             if hit:
                 return hit[1]
+            tw = self._ci.get(key.lower())
+            if tw is not None:                              # the same identity under another capitalisation: same pseudonym
+                tk, tp = self.map[tw]
+                np_ = _case_like(tp, key)
+                if not self.readonly and scope == "all" and self.scope.get(tw) == "meta" and self.con is not None:
+                    # a field-level (meta) entry becomes a full content identity: re-key it under this spelling, pseudonym unchanged
+                    self.con.execute("DELETE FROM identity WHERE original=?", (tw,))
+                    self.map.pop(tw); self.scope.pop(tw); self._ci.pop(tw.lower(), None)
+                    self.used.discard(tp.lower())
+                    self._put(key, tk if tk != "meta" else kind, np_, "all", source)
+                    return np_
+                return np_
             if self.readonly:
-                return gen(self.seed, key, 0)
+                return self._pure(kind, key)
+            gen = GEN.get(kind, gen_account)
             probe = 0
             while True:
                 p = gen(self.seed, key, probe)
@@ -396,53 +460,33 @@ class Registry:
                 if probe > 400:   # tiny identities have too few candidates: leave them alone (reported by verify)
                     self.skipped = getattr(self, "skipped", 0) + 1
                     return key
-            self.map[key] = (kind, p)
-            self.scope[key] = scope
-            self.used.add(p.lower())
-            self._originals_lower.add(key.lower())
-            self.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (key, kind, p, source, scope))
+            self._put(key, kind, p, scope, source)
             return p
 
     # ------------------------------------------------------------------ identity FIELD values (scope "meta")
-    def _ci_index(self):
-        idx = getattr(self, "_ci", None)
-        if idx is None or getattr(self, "_ci_n", -1) != len(self.map):
-            idx = {}
-            for o in self.map:
-                lo = o.lower()
-                if lo not in idx or self.scope.get(o) == "all":
-                    idx[lo] = o
-            self._ci, self._ci_n = idx, len(self.map)
-        return idx
-
     def meta_pseudonym(self, value: str) -> str:
         """Pseudonym for a value found in an identity field of one file (author, last saved by, owner, company, host name, ...).
         One identity per case-insensitive value: an already registered entry (any scope) wins; otherwise a new collision-free
-        entry of scope 'meta' is created (writable registry) or the deterministic first candidate is returned (read-only)."""
+        entry of scope 'meta' is created (writable registry) or the pure-function pseudonym is returned (read-only)."""
         key = norm_key(value)
         if not key:
             return value
         lo = key.lower()
         with self.lock:
-            idx = self._ci_index()
-            hit = idx.get(lo)
+            hit = self._ci.get(lo)
             if hit is not None:
                 return self.map[hit][1] if hit == key else _case_like(self.map[hit][1], key)
             if self.readonly:
-                return _case_like(gen_meta(self.seed, lo, 0), key)
+                return _case_like(self._pure("meta", lo), key)
             probe = 0
             while True:
                 p = gen_meta(self.seed, lo, probe)
-                if p.lower() not in self.used and p.lower() != lo and p.lower() not in self._originals_lower and p.lower() not in idx:
+                if p.lower() not in self.used and p.lower() != lo and p.lower() not in self._originals_lower:
                     break
                 probe += 1
                 if probe > 3000:
                     return key
-            self.map[lo] = ("meta", p)
-            self.scope[lo] = "meta"
-            self.used.add(p.lower())
-            self._originals_lower.add(lo)
-            self.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (lo, "meta", p, "field", "meta"))
+            self._put(lo, "meta", p, "meta", "field")
             return _case_like(p, key)
 
     def commit(self):
@@ -461,17 +505,43 @@ class Registry:
         bad = [(o, k, self.scope.get(o, "all")) for o, (k, p) in self.map.items()
                if self.scope.get(o) != "meta" and (len(o) != len(p) or (p.lower() in lower_o and p.lower() != o.lower()))]
         for o, k, sc in bad:
+            old = self.map.pop(o)[1]
+            self.used.discard(old.lower())
+            self._rebuild_ci()
+            self.con.execute("DELETE FROM identity WHERE original=?", (o,))
             if k == "email":
                 from .ident import add_email
-                old = self.map.pop(o)[1]
-                self.used.discard(old.lower())
-                self.con.execute("DELETE FROM identity WHERE original=?", (o,))
                 local, _, dom = o.partition("@")
                 add_email(self, local, dom, "repair")
                 continue
-            old = self.map.pop(o)[1]
-            self.used.discard(old.lower())
-            self.con.execute("DELETE FROM identity WHERE original=?", (o,))
             self.pseudonym(o, k, "repair", scope=sc)
         self.commit()
         return len(bad)
+
+
+class Overlay(Registry):
+    """Per-file view on a read-only base registry for identities that only one file's text reveals. Lookups hit the base first; anything
+    else gets the base's pure-function pseudonym (no probing against this file's other candidates), recorded in `self.map` for the caller."""
+
+    def __init__(self, base: Registry):
+        self.seed = base.seed
+        self.base = base
+        self.readonly = False
+        self.lock = threading.RLock()
+        self.map, self.scope, self.used, self.rev = {}, {}, set(), {}
+        self._originals_lower, self._ci, self._pure_cache = set(), {}, {}
+        self.con = None
+        self.db_path = ":overlay:"
+
+    def pseudonym(self, original: str, kind: str = "other", source: str = "", scope: str = "all") -> str:
+        key = norm_key(original)
+        if not key:
+            return original
+        hit = self.base.map.get(key) or self.map.get(key)
+        if hit:
+            return hit[1]
+        tw = self.base._ci.get(key.lower())
+        p = _case_like(self.base.map[tw][1], key) if tw is not None else self.base._pure(kind, key)
+        self.map[key] = (kind, p)
+        self.scope[key] = scope
+        return p

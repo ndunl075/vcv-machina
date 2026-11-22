@@ -91,10 +91,7 @@ def add_email(reg: Registry, local: str, domain: str, source: str):
     if p == full or len(p) != len(full):
         return
     with reg.lock:
-        reg.map[full] = ("email", p)
-        reg.scope[full] = "all"
-        reg.used.add(p.lower())
-        reg.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (full, "email", p, source, "all"))
+        reg._put(full, "email", p, "all", source)
 
 
 _OK_CHARS = re.compile(r"^[A-Za-z0-9\u00c0-\u024f .,'_@&()/+:\\-]+$")

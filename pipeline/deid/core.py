@@ -173,15 +173,18 @@ class Engine:
         self.reg = Registry(REGDB, get_seed(), readonly=True)
         # content identities (scope "all") are replaced everywhere, in paths too; "path"-scope identities (generic-looking owner/repo
         # names such as a repo called "models") are only replaced as the whole <owner>__<repo> root folder, never inside other paths
-        content = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "all" and o.lower() not in NEVER_IN_CONTENT]
+        allid = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "all"]
+        extra = []
         for o in list(self.reg.map):     # 'Last, First' / 'Last First' orderings of two-token person names
             k, p = self.reg.map[o]
             a, b = o.split(" "), p.split(" ")
             if k == "person" and self.reg.scope.get(o) == "all" and len(a) == 2 and len(b) == 2 and all(a) and all(b):
-                content.append((f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"))
-                content.append((f"{a[1]} {a[0]}", f"{b[1]} {b[0]}"))
-        self.pm = Matcher(content, min_len=4)
-        self.cm = Matcher(content, min_len=4)
+                extra.append((f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"))
+                extra.append((f"{a[1]} {a[0]}", f"{b[1]} {b[0]}"))
+        # path matcher: every identity (a folder called like a registered ordinary word is still renamed); content matcher: without the
+        # ordinary engineering words that came from folder names
+        self.pm = Matcher(allid + extra, min_len=4)
+        self.cm = Matcher([x for x in allid if x[0].lower() not in NEVER_IN_CONTENT] + extra, min_len=4)
         self.ctx_notes: list = []
         self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes, reg=self.reg)
 

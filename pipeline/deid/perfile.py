@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from . import fields
 from .matcher import Matcher
-from .registry import _case_like, Registry
+from .registry import _case_like, Overlay
 
 _BARE_TLDS = {"com", "net", "org", "io", "de", "uk", "fr", "nl", "se", "ch", "eu", "info", "edu", "gov", "dev", "ai", "app", "biz", "us", "ca", "au"}
 _AL = "A-Za-z0-9À-￿"
@@ -24,7 +24,7 @@ class FileIds:
         self.rx = re.compile(r"(?<![%s])(?:%s)(?![%s])" % (_AL, "|".join(re.escape(x) for x in pats), _AL), re.I) if pats else None
         content = [(o, p) for o, p in self.map.values() if fields.content_safe(o)]
         self.m = Matcher(content, min_len=4) if content else None              # page text and the like
-        allv = [(o, p) for o, p in self.map.values() if len(o) >= 4]
+        allv = [(o, p) for o, p in self.map.values() if fields.content_safe(o) or o.lower() in fields.ACCOUNT_LIKE]
         self.m_all = Matcher(allv, min_len=4) if allv else None                # binary stream of OLE containers (whole tokens)
 
     def add_content(self, pairs):
@@ -40,8 +40,11 @@ class FileIds:
         return bool(self.map)
 
     def _sub(self, m):
-        spelling, canon = self.map[m.group(0).lower()]
         t = m.group(0)
+        ent = self.map.get(t.lower())
+        if ent is None:          # lower-casing changed the length / the regex matched through case folding: leave the text alone
+            return t
+        spelling, canon = ent
         return canon if t == spelling else _case_like(canon, t)
 
     def apply_text(self, s: str):
@@ -91,7 +94,7 @@ def text_identities(reg, text: str):
         return []
     if not cands:
         return []
-    tmp = Registry(":memory:", reg.seed)
+    tmp = Overlay(reg)          # registered identities come from the registry, the rest from the pure function: no per-file probing
     try:
         ident.register_candidates(tmp, cands, source="text")
         out = []
@@ -115,4 +118,4 @@ def text_identities(reg, text: str):
                     out.append((sp, pp.lower() if not sp.isupper() else pp.upper()))
         return out
     finally:
-        tmp.con.close()
+        pass
