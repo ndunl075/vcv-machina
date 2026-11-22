@@ -179,7 +179,7 @@ def verify_one(item):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--procs", type=int, default=6)
+    ap.add_argument("--procs", type=int, default=2, help="worker processes (default 2; raise for the full run)")
     ap.add_argument("--sample", type=float, default=0.05, help="fraction of unchanged files also leak-scanned")
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--json", default=os.path.join(core.WORK, "verify.json"))

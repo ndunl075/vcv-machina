@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=${PYTHON:-python3.12}
-P=${1:-6}
+P=${1:-2}
 $PY -W ignore run.py harvest --procs "$P"
 $PY -W ignore run.py apply --procs "$P"
 $PY -W ignore verify.py --procs "$P"

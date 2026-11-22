@@ -170,7 +170,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["freeze", "harvest", "apply", "survey", "all"])
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--procs", type=int, default=6)
+    ap.add_argument("--procs", type=int, default=2, help="worker processes (default 2; raise for the full run)")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     if a.cmd == "freeze":
