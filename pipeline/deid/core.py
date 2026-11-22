@@ -38,7 +38,36 @@ def clone(src: str, dst: str):
         shutil.copystat(src, dst)
 
 
+FILELIST = os.path.join(WORK, "filelist.txt")
+MANIFEST = os.environ.get("DEID_MANIFEST", "/Users/nico/Developer/vcv-kits/machina/manifest.tsv")
+
+
+def freeze_list(root: str = INPUT) -> int:
+    """Write the list of fully downloaded files (size equals the manifest size) so a run works on a fixed snapshot."""
+    want = {}
+    with open(MANIFEST, encoding="utf-8") as f:
+        next(f)
+        for line in f:
+            p = line.rstrip("\n").split("\t")
+            if len(p) >= 2:
+                want[p[0]] = int(p[1])
+    n = 0
+    with open(FILELIST, "w", encoding="utf-8") as out:
+        for rel in sorted(want):
+            try:
+                if os.path.getsize(os.path.join(root, rel)) == want[rel]:
+                    out.write(rel + "\n"); n += 1
+            except OSError:
+                pass
+    return n
+
+
 def walk_inputs(root: str = INPUT):
+    if os.environ.get("DEID_USE_LIST") == "1" and os.path.exists(FILELIST):
+        with open(FILELIST, encoding="utf-8") as f:
+            for line in f:
+                yield line.rstrip("\n")
+        return
     for d, dirs, files in os.walk(root):
         dirs.sort()
         for f in sorted(files):

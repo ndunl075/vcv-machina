@@ -168,11 +168,13 @@ def cmd_survey(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["harvest", "apply", "survey", "all"])
+    ap.add_argument("cmd", choices=["freeze", "harvest", "apply", "survey", "all"])
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--procs", type=int, default=6)
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
+    if a.cmd == "freeze":
+        print("frozen file list:", core.freeze_list(), "complete files ->", core.FILELIST)
     if a.cmd in ("harvest", "all"):
         cmd_harvest(a)
     if a.cmd in ("apply", "all"):
