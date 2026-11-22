@@ -349,7 +349,7 @@ class Registry:
         """Regenerate entries whose pseudonym length differs from the original (left by an older generator). Returns count."""
         if self.readonly:
             return 0
-        bad = [(o, k, sc) for o, (k, p) in self.map.items() if len(o) != len(p)]
+        bad = [(o, k, self.scope.get(o, "all")) for o, (k, p) in self.map.items() if len(o) != len(p)]
         for o, k, sc in bad:
             if k == "email":
                 from .ident import add_email
