@@ -186,7 +186,15 @@ class Engine:
         self.pm = Matcher(allid + extra, min_len=4)
         self.cm = Matcher([x for x in allid if x[0].lower() not in NEVER_IN_CONTENT] + extra, min_len=4)
         self.ctx_notes: list = []
+        # identities found only in the visible text of PDFs (scope "pdf"): replaced inside PDFs only, never in paths or other formats
+        pdfid = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "pdf"]
+        pextra = []
+        for o, p_ in pdfid:
+            a, b = o.split(" "), p_.split(" ")
+            if self.reg.map[o][0] == "person" and len(a) == 2 and len(b) == 2 and all(a) and all(b):
+                pextra += [(f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"), (f"{a[1]} {a[0]}", f"{b[1]} {b[0]}")]
         self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes, reg=self.reg)
+        self.ctx.pdfm = Matcher(pdfid + pextra, min_len=4) if pdfid else None
 
     def out_rel(self, rel: str) -> str:
         comps = rel.split("/")

@@ -199,7 +199,11 @@ def cmd_harvest_meta(a):
         rel, status, out = res
         for c in fields.field_identities(out["fields"]):
             reg.meta_pseudonym(c)
-        ident.register_candidates(reg, [c for c in out["cands"] if c[0] != "__attachment__"], source="text")
+        reg.new_scope = "pdf"        # text-only discoveries: replaced inside PDFs only
+        try:
+            ident.register_candidates(reg, [c for c in out["cands"] if c[0] != "__attachment__"], source="text", strict=True)
+        finally:
+            reg.new_scope = None
         con.execute("INSERT OR REPLACE INTO harvest_meta VALUES(?,?,?,?)", (rel, status, len(out["fields"]), len(out["cands"])))
         cnt[0] += 1
         if cnt[0] % 500 == 0:

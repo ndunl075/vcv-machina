@@ -11,7 +11,73 @@ openscad.org inkscape.org creativecommons.org mozilla.org wikipedia.org google.c
 sourceforge.net readthedocs.io npmjs.com pypi.org stackoverflow.com youtube.com facebook.com twitter.com linkedin.com instagram.com
 ptc.com siemens.com dassault.com 3ds.com catia.com kicad.org altium.com ansys.com doi.org orcid.org arxiv.org amazon.com amazon.de ebay.com alibaba.com
 aliexpress.com europa.eu sourceforge.net huggingface.co researchgate.net grabcad.com thingiverse.com printables.com mcmaster.com
-creativecommons.org osf.io hackaday.io instructables.com""".split())
+creativecommons.org osf.io hackaday.io instructables.com
+swagelok.com 8020.net misumiusa.com misumi.com semanticscholar.org openreview.net skf.com makerbot.com spie.org wiktionary.org reddit.com microsoft.net
+cambridge.org tandfonline.com sidefx.com igus.de igus.com schunk.com boschrexroth.com coopertools.com a360.co vention.io oerlikon.com spacex.com esa.int
+taobao.com tumblr.com feedburner.com speedtest.net fast.com freenode.net ubuntu-fr.org engineeringtoolbox.com alldatasheet.com prusa3d.com lulzbot.com
+octoprint.org smoothieware.org repetier.com abbyy.com autohotkey.com astm.org asme.org ansi.org din.de beuth.de sae.org ieee.org springer.com wiley.com
+elsevier.com sciencedirect.com mdpi.com nature.com acm.org jstor.org scribd.com pinterest.com apple.com mathworks.com festo.com bosch.com abb.com
+parker.com timken.com nsk.com ntn.co.jp thk.com hiwin.com omron.com keyence.com sick.com phoenixcontact.com wago.com lenze.com sew-eurodrive.com
+mouser.com digikey.com rs-online.com farnell.com newark.com grainger.com fastenal.com mcmaster.com onlinemetals.com protolabs.com xometry.com
+sparkfun.com adafruit.com pololu.com banggood.com aliexpress.com dropbox.com wordpress.com blogspot.com wixsite.com""".split())
+PUBLIC_SUFFIXES = (".gov", ".mil", ".edu", ".int", ".ac.uk", ".gov.uk", ".edu.au", ".ac.jp", ".go.jp", ".edu.br", ".gov.br", ".edu.cn", ".ac.at")
+VENDOR_TOKENS = {"tdk", "smc", "schunk", "misumi", "mcmaster", "loctite", "festo", "bosch", "skf", "igus", "parker", "timken", "omron", "keyence", "yaskawa", "fanuc",
+                 "siemens", "abb", "ptc", "autodesk", "dassault", "kuka", "mitsubishi", "hiwin", "thk", "nsk", "ntn", "norelem", "swagelok", "cooper", "apex", "cleco",
+                 "taiyo", "murata", "kemet", "vishay", "panasonic", "samsung", "texas", "analog", "microchip", "infineon", "stmicroelectronics", "bourns", "molex", "amphenol"}
+_LEGAL = {"gmbh", "inc", "inc.", "ltd", "ltd.", "llc", "corp", "corp.", "co.", "ag", "sa", "s.a.", "s.r.l.", "srl", "spa", "s.p.a.", "bv", "b.v.", "oy", "ab", "plc",
+          "kg", "ltda", "pty", "limited", "incorporated", "university", "universität", "universitat", "universidad", "université", "universite", "università",
+          "universiteit", "institute", "institut", "instituto", "istituto", "college", "laboratory", "laboratories", "laboratorium", "hochschule", "fachhochschule",
+          "polytechnic", "e.v.", "ev", "sarl", "sas"}
+_DATEISH = re.compile(r"^\d{1,4}\s*[/.\-]\s*\d{1,2}\s*[/.\-]\s*\d{1,4}$")
+_gaz = None
+
+
+def _public_host(d: str) -> bool:
+    d = d.lower()
+    return d in PUBLIC_DOMAINS or d.endswith(PUBLIC_SUFFIXES) or any(d.endswith("." + x) for x in ("google.com", "google.com.mx", "microsoft.com", "wikipedia.org"))
+
+
+def strict_ok(kind: str, v: str) -> bool:
+    """Precision guards for identities found only in a file's visible text (weak detectors)."""
+    global _gaz
+    if kind in ("project", "address"):
+        return False
+    if kind == "phone":
+        digits = re.sub(r"\D", "", v)
+        return len(digits) >= 7 and not _DATEISH.match(v.strip()) and (re.search(r"[+()\-. ]", v) is not None)
+    toks = [t for t in re.split(r"\s+", v.strip()) if t]
+    if kind in ("person", "author"):
+        words = [t for t in toks if len(t.strip(".")) > 1]
+        if len(words) < 2:
+            return False
+        if _gaz is None:
+            from .names import gazetteer
+            from .pdftext import STOP, ALL_LABELS, _PERSON_BAD
+            _gaz = (*gazetteer(), STOP, ALL_LABELS, _PERSON_BAD)
+        F, L, STOP, LABELS, BAD = _gaz
+        low = [w.lower().strip(".,'-") for w in words]
+        if any(w in STOP or w in LABELS or w in BAD or w in VENDOR_TOKENS for w in low):
+            return False
+        if not any(w in F or w in L for w in low):
+            return False
+        d = english_words()
+        if all(w in d for w in low):
+            return False
+        return True
+    if kind in ("company", "org"):
+        low = [t.lower().strip(",()") for t in toks]
+        if not any(t in _LEGAL or t.strip(".") in _LEGAL for t in low):
+            return False
+        if any(t in VENDOR_TOKENS for t in low):
+            return False
+        d = english_words()
+        other = [t for t in low if t not in _LEGAL and t.strip(".") not in _LEGAL and t not in ("of", "the", "for", "und", "and", "&", "de", "der", "für")]
+        if not other or all(t in d or t in _LEGAL or len(t) < 2 for t in other):
+            return False
+        return True
+    return True
+
+
 
 COMPANY_WORDS = re.compile(r"(?i)\b(inc|ltd|llc|gmbh|corp|corporation|co|company|ag|bv|sa|sarl|srl|spa|oy|ab|as|plc|university|universit[a-z]*|institute|"
                            r"college|school|labs?|laboratory|technologies|technology|systems|industries|engineering|robotics|group|foundation|"
@@ -116,12 +182,14 @@ def plausible(kind: str, v: str) -> bool:
     return True
 
 
-def register_candidates(reg: Registry, cands: list[tuple], source: str = ""):
+def register_candidates(reg: Registry, cands: list[tuple], source: str = "", strict: bool = False):
     """cands: (kind_hint, value[, extra]) tuples produced by harvesters. Applies all guards."""
     for c in cands:
         kind, v = c[0], c[1]
         v = v.strip().strip("'\"").strip()
         if not v or len(v) < 3 or len(v) > 90 or not plausible(kind, v):
+            continue
+        if strict and not strict_ok(kind, v):
             continue
         if kind == "email":
             local, _, dom = v.partition("@")
@@ -132,7 +200,7 @@ def register_candidates(reg: Registry, cands: list[tuple], source: str = ""):
             if not valid_domain(d):
                 continue
             sub, rd = split_domain(d)
-            if rd in PUBLIC_DOMAINS or d in PUBLIC_DOMAINS or len(rd) < 6:
+            if rd in PUBLIC_DOMAINS or d in PUBLIC_DOMAINS or len(rd) < 6 or (strict and _public_host(rd)):
                 continue
             reg.pseudonym(rd, "domain", source)
         elif kind == "phone":

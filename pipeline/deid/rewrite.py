@@ -16,6 +16,7 @@ class Ctx:
         self.notes = notes
         self.reg = reg                  # registry for per-file identity FIELD values (None: content matcher only)
         self.trace: dict[str, int] = {}
+        self.pdfm = None                # identities that only PDF text revealed (scope "pdf"): applied inside PDFs only
 
     def t(self, label: str, n: int = 1):
         if n:
@@ -326,8 +327,10 @@ def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
             fids = None
     saved = ctx.m
     try:
+        base = Chain(ctx.pdfm, saved) if ctx.pdfm is not None else saved
+        ctx.m = base
         if fids and fids.m is not None:
-            ctx.m = Chain(fids.m, saved)
+            ctx.m = Chain(fids.m, base)
         return _do_pdf(ctx, name, data, depth, fids)
     finally:
         ctx.m = saved

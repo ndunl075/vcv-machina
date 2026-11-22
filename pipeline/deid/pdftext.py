@@ -472,6 +472,8 @@ def contact_patterns(text: str, out: list):
         d = m.group(1)
         label = d.split(".")[0].lower()
         if len(label) >= 4 and label not in STOP and not re.search(r"\d{4,}", d):
+            if len(d.rsplit(".", 1)[-1]) == 2 and not (d.lower().startswith("www.") or text[max(0, m.start() - 8): m.start()].lower().rstrip().endswith(("http://", "https://", "//"))):
+                continue          # country-code TLD only with www. / http: otherwise it is a missing space in prose ('use.it')
             out.append(("domain", d.lower()))
     for m in _INTL_PHONE.finditer(text):
         digits = re.sub(r"\D", "", m.group(1))

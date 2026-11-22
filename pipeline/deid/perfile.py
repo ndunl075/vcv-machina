@@ -88,6 +88,8 @@ def text_candidates(text: str) -> list:
             tld = dl.rsplit(".", 1)[-1]
             lab = dl.split(".")[-2] if "." in dl else ""
             if tld in _BARE_TLDS and len(lab) >= 4 and re.search(r"[a-z]{3}", lab):
+                if len(tld) == 2 and not re.search(r"(?:www\.|https?://)" + re.escape(d), text, re.I):
+                    continue          # 'use.it' in prose without a missing space
                 cands.append(("domain", d))
     except Exception:
         return []
@@ -104,7 +106,7 @@ def text_identities(reg, text: str):
         return []
     tmp = Overlay(reg)          # registered identities come from the registry, the rest from the pure function: no per-file probing
     try:
-        ident.register_candidates(tmp, cands, source="text")
+        ident.register_candidates(tmp, cands, source="text", strict=True)
         out = []
         for o, (k, p) in tmp.map.items():
             g = reg.map.get(o)
