@@ -1,5 +1,6 @@
 # att4 round 2: text-only discoveries use scope "pdf" (PDF-only matcher in Engine.ctx.pdfm), strict_ok guards in ident.py (person/company/phone/domain; project+address dropped),
 # registry re-harvested from the ORIGINAL registry: 4,831 -> 6,044 identities. Sample: PDF fields all changed 180/186, OLE 139/142 (was 183/142 before this round).
+# att4 round 3: registry re-harvested again (4,831 -> 6,329); sample fields all changed PDF 183/186, OLE 142/142; leaks 8 PDF content, 1 path.
 # STATE att4 (branch att4, from fix1 cdf4466 + pdftext merged)
 - Pseudonyms: registered identities come from the registry; unregistered ones are a pure function of (seed, kind, normalised original) probing only against
   the (read-only, identical on every slice) registry: Registry._pure, Overlay (per-file text identities), case-insensitive twins share one pseudonym.
