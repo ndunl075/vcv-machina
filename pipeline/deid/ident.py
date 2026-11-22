@@ -28,6 +28,10 @@ _LEGAL = {"gmbh", "inc", "inc.", "ltd", "ltd.", "llc", "corp", "corp.", "co.", "
           "kg", "ltda", "pty", "limited", "incorporated", "university", "universität", "universitat", "universidad", "université", "universite", "università",
           "universiteit", "institute", "institut", "instituto", "istituto", "college", "laboratory", "laboratories", "laboratorium", "hochschule", "fachhochschule",
           "polytechnic", "e.v.", "ev", "sarl", "sas"}
+_PERSON_REJECT = {"street", "st", "road", "avenue", "drive", "lane", "way", "court", "boulevard", "render", "renders", "product", "products", "produce", "standard", "standards",
+                  "wiley", "dekker", "elsevier", "springer", "press", "publishing", "publishers", "books", "journal", "magazine", "reviews", "handbook"}
+_COUNTRIES = {"switzerland", "germany", "france", "italy", "spain", "usa", "america", "american", "china", "japan", "india", "england", "canada", "europe", "european", "australia",
+              "united", "states", "national", "international", "global", "world", "standard", "standards", "standardization", "teknologi", "nacional"}
 _DATEISH = re.compile(r"^\d{1,4}\s*[/.\-]\s*\d{1,2}\s*[/.\-]\s*\d{1,4}$")
 _gaz = None
 
@@ -56,7 +60,7 @@ def strict_ok(kind: str, v: str) -> bool:
             _gaz = (*gazetteer(), STOP, ALL_LABELS, _PERSON_BAD)
         F, L, STOP, LABELS, BAD = _gaz
         low = [w.lower().strip(".,'-") for w in words]
-        if any(w in STOP or w in LABELS or w in BAD or w in VENDOR_TOKENS for w in low):
+        if any(w in STOP or w in LABELS or w in BAD or w in VENDOR_TOKENS or w in _PERSON_REJECT for w in low):
             return False
         if not any(w in F or w in L for w in low):
             return False
@@ -73,6 +77,8 @@ def strict_ok(kind: str, v: str) -> bool:
         d = english_words()
         other = [t for t in low if t not in _LEGAL and t.strip(".") not in _LEGAL and t not in ("of", "the", "for", "und", "and", "&", "de", "der", "für")]
         if not other or all(t in d or t in _LEGAL or len(t) < 2 for t in other):
+            return False
+        if all(t in _COUNTRIES or t in d for t in other) or any(t in ("standards", "standard", "standardization") for t in other):
             return False
         return True
     return True
