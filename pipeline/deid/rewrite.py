@@ -201,7 +201,7 @@ def _stream_may_hit(ctx: Ctx, raw: bytes) -> bool:
     if b"Tj" not in raw and b"TJ" not in raw and b"'" not in raw:
         return False
     joined = b"".join(_LIT.findall(raw)).decode("latin-1")
-    return bool(joined) and bool(ctx.m.find_str(joined))
+    return bool(joined) and ctx.m.replace_str(joined)[1] > 0
 
 
 def _page_bytes(page) -> bytes:
