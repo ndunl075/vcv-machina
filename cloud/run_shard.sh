@@ -70,7 +70,8 @@ REG=${DEID_REG_DIR:-}
 if [ -z "$REG" ]; then
   [ -n "${DEID_REG_BLOB:-}" ] && [ -n "${DEID_REG_PASS:-}" ] || { say "no registry: set DEID_REG_DIR or DEID_REG_BLOB+DEID_REG_PASS"; exit 12; }
   mkdir -p "$TMP/reg"; chmod 700 "$TMP/reg"
-  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -pass env:DEID_REG_PASS -in "$DEID_REG_BLOB" | tar -x -C "$TMP/reg" || { say "registry decrypt failed"; exit 12; }
+  REG_P=${DEID_REG_PASS%%[$'\r\n']*}    # first line only, as `-pass file:` reads it (a secret set from a file may end in a newline)
+  REG_P=$REG_P openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -pass env:REG_P -in "$DEID_REG_BLOB" | tar -x -C "$TMP/reg" || { say "registry decrypt failed"; exit 12; }
   REG=$TMP/reg
 fi
 [ -s "$REG/registry.sqlite" ] && [ -s "$REG/seed.bin" ] || { say "registry.sqlite / seed.bin missing"; exit 12; }

@@ -1,0 +1,129 @@
+name: batch
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: 'shard ids: "all", "0-3", "0,5,7-9"'
+        default: "0"
+      upload:
+        description: "upload the result (false = dry run without upload)"
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      ref:
+        description: "branch, tag or commit of the source repo"
+        default: "cloud"
+      reg_path:
+        description: "path of the encrypted blob inside the checkout"
+        default: "cloud/registry.enc"
+
+permissions:
+  contents: read
+
+env:
+  # every step below sends its tool output to files on the runner that are never uploaded; the log only gets counts printed by run_shard.sh
+  SRC_KEY: ${{ secrets.MAC_SRC_KEY }}
+  SRC_URL: ${{ secrets.MAC_SRC_URL }}
+  REF: ${{ inputs.ref }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      m: ${{ steps.m.outputs.m }}
+    steps:
+      - id: m
+        env:
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          set +x
+          umask 077
+          mkdir -p ~/.ssh ~/s
+          printf '%s\n' "$SRC_KEY" > ~/.ssh/k
+          ssh-keyscan -t ed25519,rsa github.com > ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND='ssh -i ~/.ssh/k -o IdentitiesOnly=yes -o BatchMode=yes -q' git clone -q --no-checkout "$SRC_URL" ~/s/r >/dev/null 2>&1 || { echo "clone failed"; exit 1; }
+          rm -f ~/.ssh/k
+          { git -C ~/s/r checkout -q --detach "origin/$REF" || git -C ~/s/r checkout -q --detach "$REF"; } >/dev/null 2>&1 || { echo "checkout failed"; exit 1; }
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          n = len(json.load(open(os.path.expanduser("~/s/r/cloud/shards.json")))["shards"])
+          spec = os.environ["SHARDS"].strip().lower()
+          ids = []
+          if spec == "all":
+              ids = list(range(n))
+          else:
+              for part in spec.split(","):
+                  part = part.strip()
+                  if "-" in part:
+                      a, b = part.split("-")
+                      ids += range(int(a), int(b) + 1)
+                  elif part:
+                      ids.append(int(part))
+          ids = sorted({i for i in ids if 0 <= i < n})
+          assert ids, "no valid shard ids"
+          print("m=" + json.dumps(ids))
+          PY
+
+  work:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      max-parallel: 20
+      fail-fast: false
+      matrix:
+        i: ${{ fromJSON(needs.plan.outputs.m) }}
+    env:
+      I: ${{ matrix.i }}
+      REG_PATH: ${{ inputs.reg_path }}
+      DEID_REG_PASS: ${{ secrets.MAC_REG_PASS }}
+      MACHINA_DEST: ${{ secrets.MACHINA_DEST }}
+      MACHINA_UPLOAD_TOKEN: ${{ secrets.MACHINA_UPLOAD_TOKEN }}
+      NO_UPLOAD: ${{ inputs.upload == 'true' && '0' || '1' }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: source
+        run: |
+          set +x
+          umask 077
+          mkdir -p ~/.ssh ~/s ~/res
+          printf '%s\n' "$SRC_KEY" > ~/.ssh/k
+          ssh-keyscan -t ed25519,rsa github.com > ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND='ssh -i ~/.ssh/k -o IdentitiesOnly=yes -o BatchMode=yes -q' git clone -q --no-checkout "$SRC_URL" ~/s/r >/dev/null 2>&1 || { echo "clone failed"; exit 1; }
+          rm -f ~/.ssh/k
+          { git -C ~/s/r checkout -q --detach "origin/$REF" || git -C ~/s/r checkout -q --detach "$REF"; } >/dev/null 2>&1 || { echo "checkout failed"; exit 1; }
+      - name: run
+        run: |
+          set +x
+          export DEID_REG_BLOB="$HOME/s/r/$REG_PATH" RESULT_DIR="$HOME/res" SHARD_TMP="$RUNNER_TEMP/w" PYTHON=python3.12
+          bash ~/s/r/cloud/run_shard.sh "$I" 2> "$RUNNER_TEMP/stderr.txt"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: res-${{ matrix.i }}
+          path: /home/runner/res/*.json
+          if-no-files-found: warn
+          retention-days: 3
+
+  summary:
+    needs: work
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: res-*
+          path: res
+          merge-multiple: true
+      - run: |
+          python3 - <<'PY'
+          import glob, json
+          rs = [json.load(open(f)) for f in sorted(glob.glob("res/*.json"))]
+          bad = [r["shard"] for r in rs if r.get("exit_code") != 0 or r.get("failures") != 0]
+          print(f"shards reported {len(rs)}; files in {sum(r.get('files_in', 0) for r in rs)}, out {sum(r.get('files_out', 0) for r in rs)}, "
+                f"GB {sum(r.get('bytes_in', 0) for r in rs) / 1e9:.1f}; not clean: {bad or 'none'}; slowest {max((r.get('seconds', 0) for r in rs), default=0)}s")
+          PY
