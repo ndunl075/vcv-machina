@@ -21,7 +21,7 @@
    Target: OLE saved-account, OLE cross-stream residue, PDF scoped removal, cross-PDF consistency.
    Sample before -> after: OLE files with all identity fields replaced 63 -> 142 of 142; OLE files with the account still in other streams 60 -> 3;
    PDF files with all author-style fields replaced 143 -> 183 of 186; PDF residue of field values elsewhere 28 -> 4. verify.py usability: 0 failures on 450 files.
-2. (second commit) per-file text identities in PDFs: e-mail, domain (also bare / mixed case), phone, copyright holder, person names (name lists in
+2. 28b253b per-file text identities in PDFs: e-mail, domain (also bare / mixed case), phone, copyright holder, person names (name lists in
    data/first_names.txt.gz, last_names.txt.gz, public lists); harvest-meta stage in run.py; overlay keeps page count; public domains list extended;
    generic folder-name words (core.NEVER_IN_CONTENT) no longer replaced inside content.
    Sample: PDFs with non-public domain left 51 -> 9 of 80; words missing from visible text 1988 -> 1777 of 357,830.
@@ -43,8 +43,8 @@
   Do not use ledger/registry of the live run for tests; work copies are under /Volumes/vcvmachina/work/fixtest/.
 
 ## Next, in priority order
-1. Re-run both samples with the final head (OLE sample was run before the last PDF-only edits), run verify (diag/runverify.py), report.
-2. Check the M2 registry copy (fixtest/m2work) with a sample apply: collisions 0, sizes unchanged.
+1. DONE: both samples re-run with head, verify clean (0 failures on 450 files); M2 registry copy (fixtest/m2work, harvest-meta on the sample only) also applies cleanly (out_m2/).
+2. Run harvest-meta on the whole corpus when the architect decides (M2).
 3. Non-ASCII field values in OLE non-property streams; label-based names in title blocks; pdf overlay cap of 80 pages; Title/Subject policy; logos.
 4. Pseudonym quality (digit tails like "Bo Fo8" for colliding person names; very long first names for composite accounts).
 
