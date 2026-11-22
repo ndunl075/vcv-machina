@@ -12,6 +12,10 @@ Decision for the 3 input files whose names macOS could not store: the cloud run 
 
 Names used below: public runner repo `PUB=ndunl075/scratch-notes-7`, private repo `ndunl075/vcv-machina`, branch `cloud`.
 
+Note: attempt-1/corpus holds 188,719 files; the 3 unrepresentable files were never written there, so the cloud run is the first to produce them
+(attempt-2 has 188,722 objects under `corpus/`). Rewritten PDFs differ from the Mac run only in the trailer `/ID` (qpdf makes a new random id on
+every run); every other file is byte-identical.
+
 ## (a) Secrets and deploy key (already done; for reference)
 ```
 gh repo deploy-key add KEY.pub -R ndunl075/vcv-machina -t runner-ro          # read-only (no --allow-write)
