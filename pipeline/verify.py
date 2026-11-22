@@ -122,6 +122,9 @@ def verify_one(item):
         fails.append("extension-changed")
     if _E.pm.replace_str(orel)[1]:
         fails.append("leak-in-path")
+    rp, op = rel.split("/"), orel.split("/")
+    if len(rp) > 3 and rp[0] == "sources" and rp[1] in ("github", "gitlab") and rp[2] == op[2]:
+        fails.append("root-folder-not-renamed")
     dsz = os.path.getsize(dst)
     if size == 0:
         return rel, ext, fails

@@ -76,6 +76,7 @@ class Matcher:
         self.ac16 = self._build(self.pats16)
         # str side: longest-first regex is fine for path-length strings; use AC over utf-8 for large text too
         self._str_keys = sorted(self.str_map, key=len, reverse=True)
+        self._nonascii_keys = [k for k in self._str_keys if not k.isascii()]
 
     @staticmethod
     def _build(pats):
@@ -149,13 +150,15 @@ class Matcher:
     def replace_str(self, s: str):
         if not s or not self._str_keys:
             return s, 0
+        if s.isascii() and not self._nonascii_keys:
+            pass
         b, n = self._apply(s.encode("utf-8", "surrogatepass"), self.ac8, self.pats8, self.rep8, self.need_b8, False)
         if n:
             return b.decode("utf-8", "surrogatepass"), n
         # non-ASCII originals (str-only)
         n = 0
-        for k in self._str_keys:
-            if not k.isascii() and k in s:
+        for k in self._nonascii_keys:
+            if k in s:
                 s = s.replace(k, self.str_map[k]); n += 1
         return s, n
 

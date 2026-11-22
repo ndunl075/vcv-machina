@@ -193,6 +193,29 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
 
 
 # ---------------------------------------------------------------------------------------------------- PDF
+_LIT = re.compile(rb"\(((?:\\.|[^\\()])*)\)", re.S)
+
+
+def _stream_may_hit(ctx: Ctx, raw: bytes) -> bool:
+    """Cheap prefilter: all string literals of the content stream joined (TJ pieces concatenate), searched for identities."""
+    if b"Tj" not in raw and b"TJ" not in raw and b"'" not in raw:
+        return False
+    joined = b"".join(_LIT.findall(raw)).decode("latin-1")
+    return bool(joined) and bool(ctx.m.find_str(joined))
+
+
+def _page_bytes(page) -> bytes:
+    c = page.get("/Contents")
+    if c is None:
+        return b""
+    try:
+        if isinstance(c, __import__("pikepdf").Array):
+            return b"\n".join(x.read_bytes() for x in c)
+        return c.read_bytes()
+    except Exception:
+        return b""
+
+
 def _fix_text_ops(ctx: Ctx, ops):
     import pikepdf
     changed = 0
@@ -292,7 +315,7 @@ def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
                     if nb is not None:
                         obj.write(nb); changed += 1
                         ctx.t("pdf-attachment-content")
-                elif st == "/Form" or st is None and "/Length" in obj and t not in ("/XRef", "/ObjStm", "/Font", "/FontDescriptor") and "/Width" not in obj and "/FontFile" not in obj:
+                elif st == "/Form" and _stream_may_hit(ctx, obj.read_bytes()):
                     ops = pikepdf.parse_content_stream(obj)
                     c = _fix_text_ops(ctx, ops)
                     if c:
@@ -314,6 +337,8 @@ def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
         # page content streams (pages whose /Contents is array / single stream not caught above)
         for page in pdf.pages:
             try:
+                if not _stream_may_hit(ctx, _page_bytes(page)):
+                    continue
                 ops = pikepdf.parse_content_stream(page)
                 c = _fix_text_ops(ctx, ops)
                 if c:
