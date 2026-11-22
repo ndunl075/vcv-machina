@@ -76,6 +76,9 @@ def cmd_harvest(a):
     if a.limit:
         rels = rels[: a.limit]
     core.seed_paths(reg, rels)
+    fixed = reg.repair()
+    if fixed:
+        print(f"repaired {fixed} registry entries", flush=True)
     done = {r for (r,) in con.execute("SELECT rel FROM harvest")} if not a.force else set()
     todo = [r for r in rels if r not in done]
     print(f"harvest: {len(rels)} files, {len(todo)} to do", flush=True)

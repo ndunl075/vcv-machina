@@ -48,7 +48,7 @@ def _company_index() -> dict[int, list[str]]:
     for a in W.COMPANY_A:
         for b in W.COMPANY_A:
             if a != b:
-                d.setdefault(len(a) + len(b) + 1, []).append(f"{a}{b.lower()}")  # one word, e.g. CedarFalcon
+                d.setdefault(len(a) + len(b), []).append(f"{a}{b.lower()}")  # one word, e.g. CedarFalcon
     return d
 
 
@@ -344,3 +344,24 @@ class Registry:
     def items(self, scope: str | None = None):
         """(original, kind, pseudonym) for all entries, or only those usable at the given scope ('all' = content too)."""
         return [(o, k, p) for o, (k, p) in self.map.items() if scope is None or self.scope.get(o) == scope or scope == "path"]
+
+    def repair(self) -> int:
+        """Regenerate entries whose pseudonym length differs from the original (left by an older generator). Returns count."""
+        if self.readonly:
+            return 0
+        bad = [(o, k, sc) for o, (k, p) in self.map.items() if len(o) != len(p)]
+        for o, k, sc in bad:
+            if k == "email":
+                from .ident import add_email
+                old = self.map.pop(o)[1]
+                self.used.discard(old.lower())
+                self.con.execute("DELETE FROM identity WHERE original=?", (o,))
+                local, _, dom = o.partition("@")
+                add_email(self, local, dom, "repair")
+                continue
+            old = self.map.pop(o)[1]
+            self.used.discard(old.lower())
+            self.con.execute("DELETE FROM identity WHERE original=?", (o,))
+            self.pseudonym(o, k, "repair", scope=sc)
+        self.commit()
+        return len(bad)

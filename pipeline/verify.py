@@ -65,7 +65,9 @@ def check_zip(a, b):
         return "member-count"
     for x, y in zip(ia, ib):
         if x.file_size != y.file_size:
-            return "member-size"
+            # rewritten PDFs / nested containers legitimately change size; plain members must keep it
+            if rewrite.sniff(x.filename, za.read(x)[:8]) == "raw":
+                return "member-size"
         if y.filename.lower().endswith((".xml", ".model", ".rels")):
             try:
                 from lxml import etree

@@ -78,7 +78,7 @@ def add_email(reg: Registry, local: str, domain: str, source: str):
         dpseudo = (domain[: len(domain) - len(rd)] + dp) if sub else dp
     lp = reg.pseudonym(local, "account", source, scope="path") if len(local) >= 4 else local
     p = lp + "@" + dpseudo
-    if p == full:
+    if p == full or len(p) != len(full):
         return
     with reg.lock:
         reg.map[full] = ("email", p)
