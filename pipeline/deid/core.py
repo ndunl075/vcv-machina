@@ -121,6 +121,12 @@ class Engine:
         # content identities (scope "all") are replaced everywhere, in paths too; "path"-scope identities (generic-looking owner/repo
         # names such as a repo called "models") are only replaced as the whole <owner>__<repo> root folder, never inside other paths
         content = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "all"]
+        for o in list(self.reg.map):     # 'Last, First' / 'Last First' orderings of two-token person names
+            k, p = self.reg.map[o]
+            a, b = o.split(" "), p.split(" ")
+            if k == "person" and self.reg.scope.get(o) == "all" and len(a) == 2 and len(b) == 2 and all(a) and all(b):
+                content.append((f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"))
+                content.append((f"{a[1]} {a[0]}", f"{b[1]} {b[0]}"))
         self.pm = Matcher(content, min_len=4)
         self.cm = Matcher(content, min_len=4)
         self.ctx_notes: list = []

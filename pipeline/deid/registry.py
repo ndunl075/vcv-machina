@@ -98,6 +98,16 @@ def _split_sep(orig: str):
 
 
 @lru_cache(maxsize=None)
+def _person_index2() -> dict[tuple, list[str]]:
+    """(len(first), len(last)) -> names: keeps each token's length so 'Last, First' variants stay equal-length too."""
+    d: dict[tuple, list[str]] = {}
+    for f in W.FIRST:
+        for l in W.LAST:
+            d.setdefault((len(f), len(l)), []).append(f"{f} {l}")
+    return d
+
+
+@lru_cache(maxsize=None)
 def _long_person_index(n: int):
     """'First Mid Last' / 'First M. Last' names of exactly n characters (for long original names)."""
     mids = {}
@@ -116,7 +126,14 @@ def _long_person_index(n: int):
 def gen_person(seed, orig, probe=0):
     n = len(orig)
     h = _h(seed, "person", orig.lower())
-    s = _pick(_person_index(), n, h, probe)
+    toks = orig.split(" ")
+    s = None
+    if len(toks) == 2 and all(toks):
+        lst = _person_index2().get((len(toks[0]), len(toks[1])))
+        if lst:
+            s = lst[(h + probe * 7919) % len(lst)]
+    if s is None:
+        s = _pick(_person_index(), n, h, probe)
     st = _stream(seed, "person", orig.lower(), str(probe))
     if s is None and n > 12:
         lst = _long_person_index(n)

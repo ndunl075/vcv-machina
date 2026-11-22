@@ -158,7 +158,6 @@ def do_tar(ctx: Ctx, name: str, data: bytes, depth: int):
 # ---------------------------------------------------------------------------------------------------- OLE
 def do_ole(ctx: Ctx, name: str, data: bytes):
     import olefile
-    new_all, n_raw = ctx.m.replace_bytes(data)  # cheap pre-check: identifiers visible in raw bytes or UTF-16
     # Streams can be split over sectors, so always go stream by stream.
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ole")
     try:
@@ -344,7 +343,10 @@ def _pdf_visible_fixup(ctx: Ctx, data: bytes, name: str, orig_changed: bool):
         return data if orig_changed else None
     fixed = 0
     try:
-        for page in doc:
+        for pno, page in enumerate(doc):
+            if pno >= 80:           # bound the cost on very long documents (listed as a limitation)
+                ctx.notes.append("pdf-visible-scan-capped")
+                break
             txt = page.get_text()
             hits = ctx.m.find_str(txt)
             if not hits:
