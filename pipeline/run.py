@@ -148,7 +148,7 @@ def cmd_apply(a):
     def on_crash(rel):   # a file that kills workers is cloned unchanged and listed
         try:
             eng = core.Engine()
-            orel = eng.out_rel(rel)
+            orel = core.legalize(eng.out_rel(rel))
             core.clone(os.path.join(core.INPUT, rel), os.path.join(core.OUT, orel))
             con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?,?)", (rel, orel, "crash", "cloned-after-crash", 0, os.path.getsize(os.path.join(core.INPUT, rel)), 0, ver, "worker-crash", "{}"))
             con.commit()

@@ -13,12 +13,19 @@ LEDGER = os.path.join(WORK, "ledger.sqlite")
 SEEDFILE = os.path.join(WORK, "seed.bin")
 HEX12 = re.compile(r"^[0-9a-f]{12}$")
 
-_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-_libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+_libc = None
+if sys.platform == "darwin":          # APFS copy-on-write clone; every other platform uses a plain copy
+    try:
+        _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        _libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    except (OSError, AttributeError):
+        _libc = None
 
 
 def get_seed() -> bytes:
     if not os.path.exists(SEEDFILE):
+        if os.environ.get("DEID_REQUIRE_SEED") == "1":     # a worker must never invent a seed: its pseudonyms would not match the registry
+            raise SystemExit("seed.bin is missing and DEID_REQUIRE_SEED=1")
         os.makedirs(WORK, exist_ok=True)
         with open(SEEDFILE, "wb") as f:
             f.write(secrets.token_bytes(32))
@@ -31,14 +38,14 @@ def clone(src: str, dst: str):
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if os.path.lexists(dst):
         os.unlink(dst)
-    if _libc.clonefile(os.fsencode(src), os.fsencode(dst), 0) != 0:
-        err = ctypes.get_errno()
-        import shutil
-        shutil.copyfile(src, dst)
-        shutil.copystat(src, dst)
+    if _libc is not None and _libc.clonefile(os.fsencode(src), os.fsencode(dst), 0) == 0:
+        return
+    import shutil
+    shutil.copyfile(src, dst)
+    shutil.copystat(src, dst)
 
 
-FILELIST = os.path.join(WORK, "filelist.txt")
+FILELIST = os.environ.get("DEID_FILELIST") or os.path.join(WORK, "filelist.txt")
 MANIFEST = os.environ.get("DEID_MANIFEST", "/Users/nico/Developer/vcv-kits/machina/manifest.tsv")
 
 
@@ -73,6 +80,18 @@ def walk_inputs(root: str = INPUT):
         for f in sorted(files):
             p = os.path.join(d, f)
             yield os.path.relpath(p, root)
+
+
+# Output names for the three input files whose names the macOS build machine could not store (APFS rejects U+FFC9 and U+FFD0 in a name).
+# attempt-1 stores them with each such character replaced by "_" (see README section 4); DEID_LEGALIZE=1 makes other machines (which can store
+# the true name) produce exactly the same output path, so the README stays true for every run.
+_APFS_REJECTED = "\uffc9\uffd0"
+
+
+def legalize(orel: str) -> str:
+    if os.environ.get("DEID_LEGALIZE") != "1":
+        return orel
+    return "".join("_" if ch in _APFS_REJECTED else ch for ch in orel)
 
 
 def repo_parts(component: str):
@@ -203,7 +222,7 @@ def _scan_patches(path: str, size: int, m: Matcher):
 def apply_one(eng: Engine, rel: str, src: str | None = None, orel_override: str | None = None):
     """Returns (out_rel, handler, status, nrep, note, trace). src / orel_override serve files that cannot live under their own name."""
     src = src or os.path.join(INPUT, rel)
-    orel = orel_override or eng.out_rel(rel)
+    orel = orel_override or legalize(eng.out_rel(rel))
     dst = os.path.join(OUT, orel)
     eng.ctx_notes.clear()
     eng.ctx.trace.clear()
