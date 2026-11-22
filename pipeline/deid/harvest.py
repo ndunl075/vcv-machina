@@ -360,6 +360,11 @@ def pdf_candidates(data: bytes, out: list):
             if i >= 8:
                 break
             txt.append(pg.get_text())
+        try:                    # title-block / notice / contact discovery (geometry aware), see deid/pdftext.py
+            from . import pdftext
+            pdftext.title_block_candidates(doc, out)
+        except Exception:
+            pass
         doc.close()
         generic_text_candidates("\n".join(txt), out)
     except Exception:
