@@ -360,9 +360,10 @@ def pdf_candidates(data: bytes, out: list):
             if i >= 8:
                 break
             txt.append(pg.get_text())
-        try:                    # title-block / notice / contact discovery (geometry aware), see deid/pdftext.py
+        try:                    # (DEID_PDFTEXT=0 disables it: evaluator 'before' runs) title-block / notice / contact discovery (geometry aware), see deid/pdftext.py
             from . import pdftext
-            pdftext.title_block_candidates(doc, out)
+            if __import__('os').environ.get('DEID_PDFTEXT') != '0':
+                pdftext.title_block_candidates(doc, out)
         except Exception:
             pass
         doc.close()
