@@ -164,5 +164,7 @@ def register_candidates(reg: Registry, cands: list[tuple], source: str = ""):
             if detect.is_generic_person(v):
                 continue
             reg.pseudonym(v, "company", source, scope="path" if is_generic_phrase(v) else "all")
+        elif kind == "address":
+            reg.pseudonym(v, "address", source)
         elif kind in ("account", "project", "partnumber"):
             reg.pseudonym(v, kind, source, scope="path" if is_generic_phrase(v) else "all")
