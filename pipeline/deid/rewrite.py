@@ -10,10 +10,11 @@ BIG = 700 << 20
 
 class Ctx:
     """Per-process context: matchers + name rewriting + a place to record notes."""
-    def __init__(self, matcher, path_matcher, notes: list):
+    def __init__(self, matcher, path_matcher, notes: list, reg=None):
         self.m = matcher
         self.pm = path_matcher
         self.notes = notes
+        self.reg = reg                  # registry for per-file identity FIELD values (None: content matcher only)
         self.trace: dict[str, int] = {}
 
     def t(self, label: str, n: int = 1):
@@ -158,13 +159,33 @@ def do_tar(ctx: Ctx, name: str, data: bytes, depth: int):
 # ---------------------------------------------------------------------------------------------------- OLE
 def do_ole(ctx: Ctx, name: str, data: bytes):
     import olefile
+    from . import fields, perfile
+    from .matcher import Chain
     # Streams can be split over sectors, so always go stream by stream.
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ole")
+    saved_m = ctx.m
     try:
         tmp.write(data); tmp.close()
         ole = olefile.OleFileIO(tmp.name, write_mode=True)
         changed = 0
         try:
+            # identity fields (author, last saved by, manager, company ...) of every property set, whatever their length or wording
+            fids = None
+            by_stream: dict = {}
+            if ctx.reg is not None:
+                try:
+                    slots = fields.ole_field_slots(ole)
+                    fids = perfile.FileIds(ctx.reg, [x[4] for x in slots])
+                except Exception as e:
+                    slots, fids = [], None
+                    ctx.notes.append(f"ole-fields-failed:{type(e).__name__}")
+                if fids:
+                    for sp, off, nb, kind, txt in slots:
+                        by_stream.setdefault(tuple(sp), []).append((off, nb, kind, txt))
+                    if fids.m_all is not None:
+                        ctx.m = Chain(fids.m_all, saved_m)
+            # every stream, read once and written once (olefile serves stale mini-stream data after a write):
+            # field values first, then registry identities + the specific field values of this file
             for sp in ole.listdir(streams=True, storages=False):
                 try:
                     st = ole.openstream(sp).read()
@@ -172,19 +193,26 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                     continue
                 if not st:
                     continue
-                nst, n = ctx.m.replace_bytes(st)
+                buf = bytearray(st)
+                for off, nb, kind, txt in by_stream.get(tuple(sp), ()):
+                    new, n = fids.apply_text(txt)
+                    if n:
+                        buf[off:off + nb] = fids.fit(new, nb, kind == "w")
+                        ctx.t("ole-field", n)
+                nst, n = ctx.m.replace_bytes(bytes(buf))
                 ctx.t("ole-stream:" + sp[-1][:28], n)
-                if n and len(nst) == len(st):
+                if nst != st and len(nst) == len(st):
                     ole.write_stream(sp, nst)
-                    changed += n
+                    changed += 1
         finally:
             ole.close()
         with open(tmp.name, "rb") as f:
             out = f.read()
     finally:
+        ctx.m = saved_m
         os.unlink(tmp.name)
     # whatever is left in the container outside streams (directory entry names, slack, mini-stream gaps)
-    out2, n2 = ctx.m.replace_bytes(out)
+    out2, n2 = (ctx.m if ctx.m is saved_m else saved_m).replace_bytes(out)
     if n2:
         out = out2
         changed += n2
@@ -281,10 +309,86 @@ def _walk_strings(ctx: Ctx, obj, depth=0) -> int:
 
 
 def do_pdf(ctx: Ctx, name: str, data: bytes, depth: int):
+    """Wrapper: identity FIELD values of this PDF (author, owner, annotation authors ...) first, then the content passes."""
+    import pikepdf
+    from . import fields, perfile
+    from .matcher import Chain
+    fids = None
+    if ctx.reg is not None:
+        try:
+            with pikepdf.open(io.BytesIO(data)) as p0:
+                fids = perfile.FileIds(ctx.reg, fields.pdf_field_values(p0))
+        except Exception:
+            fids = None
+    saved = ctx.m
+    try:
+        if fids and fids.m is not None:
+            ctx.m = Chain(fids.m, saved)
+        return _do_pdf(ctx, name, data, depth, fids)
+    finally:
+        ctx.m = saved
+
+
+_XMP_FIELD = None
+
+
+def _fix_fields(ctx: Ctx, pdf, fids) -> int:
+    """Field-level replacement (any length / wording): Info author-style keys, XMP creator-style elements, annotation authors."""
+    import pikepdf
+    from . import fields
+    global _XMP_FIELD
+    n = 0
+    for k in fields.INFO_KEYS:
+        try:
+            v = pdf.docinfo.get(k)
+            if v is not None:
+                nv, c = fids.apply_text(str(v))
+                if c:
+                    pdf.docinfo[k] = pikepdf.String(nv); n += c
+        except Exception:
+            continue
+    try:
+        md = pdf.Root.get("/Metadata")
+        if md is not None:
+            x = md.read_bytes().decode("utf-8", "surrogateescape")
+            cnt = [0]
+            def piece(t):
+                nt, c = fids.apply_text(t.group(1))
+                cnt[0] += c
+                return ">" + nt + "<"
+
+            def elem(m):
+                inner = fields._TXT.sub(piece, ">" + m.group(2) + "<")[1:-1]
+                return m.group(0)[: m.start(2) - m.start(0)] + inner + m.group(0)[m.end(2) - m.start(0):]
+            x2 = fields._XMP_RE.sub(elem, x)
+            if cnt[0]:
+                md.write(x2.encode("utf-8", "surrogateescape")); n += cnt[0]
+                ctx.t("pdf-xmp-field", cnt[0])
+    except Exception:
+        pass
+    try:
+        for pg in pdf.pages:
+            for a in pg.get("/Annots", []) or []:
+                try:
+                    if a.get("/Subtype") != "/Widget" and a.get("/T") is not None:
+                        nv, c = fids.apply_text(str(a.get("/T")))
+                        if c:
+                            a["/T"] = pikepdf.String(nv); n += c
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    ctx.t("pdf-field", n)
+    return n
+
+
+def _do_pdf(ctx: Ctx, name: str, data: bytes, depth: int, fids=None):
     import pikepdf
     pdf = pikepdf.open(io.BytesIO(data))
     changed = 0
     try:
+        if fids:
+            changed += _fix_fields(ctx, pdf, fids)
         # 1. info dictionary + every dictionary string (outlines, annotations, form fields, names)
         for obj in pdf.objects:
             if isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream, pikepdf.Array)):

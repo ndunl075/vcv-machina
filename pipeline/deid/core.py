@@ -178,7 +178,7 @@ class Engine:
         self.pm = Matcher(content, min_len=4)
         self.cm = Matcher(content, min_len=4)
         self.ctx_notes: list = []
-        self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes)
+        self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes, reg=self.reg)
 
     def out_rel(self, rel: str) -> str:
         comps = rel.split("/")

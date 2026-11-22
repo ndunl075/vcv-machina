@@ -173,3 +173,25 @@ class Matcher:
                 continue
             out.append((b[st:e].decode("utf-8", "replace"), self.rep8[idx].decode("utf-8", "replace")))
         return out
+
+
+class Chain:
+    """Per-file matcher followed by the global one, same interface as Matcher for the calls the rewriters make."""
+    def __init__(self, first, second):
+        self.first, self.second = first, second
+
+    def replace_bytes(self, data):
+        data, n1 = self.first.replace_bytes(data)
+        data, n2 = self.second.replace_bytes(data)
+        return data, n1 + n2
+
+    def replace_str(self, s):
+        s, n1 = self.first.replace_str(s)
+        s, n2 = self.second.replace_str(s)
+        return s, n1 + n2
+
+    def find_str(self, s):
+        return self.first.find_str(s) + self.second.find_str(s)
+
+    def count_bytes(self, data):
+        return self.replace_bytes(data)[1]

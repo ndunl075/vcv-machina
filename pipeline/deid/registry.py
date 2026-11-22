@@ -265,7 +265,73 @@ def gen_domain(seed, orig, probe=0):
     return s + "." + tld
 
 
-GEN = {"person": gen_person, "company": gen_company, "account": gen_account, "project": gen_project,
+def _case_like(p: str, v: str) -> str:
+    """Give pseudonym p the case style of the original token v (single or multi token)."""
+    letters = [c for c in v if c.isalpha()]
+    if len(letters) >= 2 and all(c.isupper() for c in letters):
+        return p.upper()
+    if letters and all(c.islower() for c in letters):
+        return p.lower()
+    return p.title() if p.islower() else p
+
+
+_NAMES_BY_LEN: dict = {}
+
+
+def _names_of_len(n: int) -> list:
+    if not _NAMES_BY_LEN:
+        for w in W.FIRST + W.LAST:
+            _NAMES_BY_LEN.setdefault(len(w), []).append(w)
+    return _NAMES_BY_LEN.get(n, [])
+
+
+def gen_meta(seed, orig, probe=0):
+    """Pseudonym for a value found in an identity FIELD (author, last saved by, owner, company, host, ...), any length:
+    same number of characters as the (lower-cased) original, name-like, digits stay digits and separators stay separators.
+    Used for short and dictionary-looking values that the content matcher must never touch."""
+    n = len(orig)
+    h = _h(seed, "meta", orig.lower())
+    st = _stream(seed, "meta", orig.lower(), str(probe))
+    if n == 0:
+        return orig
+    if " " in orig and re.fullmatch(r"[A-Za-z][A-Za-z .'\-]+", orig) and len(orig) >= 5:
+        return gen_person(seed, orig.lower().title() if orig.islower() or orig.isupper() else orig, probe).lower() if orig.islower() else (
+            gen_person(seed, orig.title(), probe).upper() if orig.isupper() else gen_person(seed, orig, probe))
+    if re.search(r"\d", orig) or re.search(r"[-_. ]", orig):
+        out, i = [], 0
+        while i < n:
+            ch = orig[i]
+            if ch.isdigit():
+                out.append(str(next(st) % 10)); i += 1
+            elif ch.isalpha():
+                j = i
+                while j < n and orig[j].isalpha():
+                    j += 1
+                L = j - i
+                out.append(_pad_word(st, L) if L > 1 else chr(97 + next(st) % 26))
+                i = j
+            else:
+                out.append(ch); i += 1
+        s = "".join(out)
+        return s if s.lower() != orig.lower() else gen_meta(seed, orig, probe + 1000)
+    if not orig.isalpha():
+        return "".join(chr(97 + next(st) % 26) for _ in range(n))
+    names = _names_of_len(n)
+    pool = len(names) * 2 if 3 <= n <= 7 else len(names) + 4000
+    k = (h + probe * 7919) % pool
+    if k < len(names) and probe < len(names):
+        s = names[k]
+    elif n >= 8:
+        a = _pick(_word_index(), n, h, probe)
+        s = a if a else _pad_word(st, n)
+    else:
+        s = _pad_word(st, n)
+    if s.lower() == orig.lower():
+        return gen_meta(seed, orig, probe + 1000)
+    return s
+
+
+GEN = {"meta": gen_meta, "person": gen_person, "company": gen_company, "account": gen_account, "project": gen_project,
        "partnumber": gen_partnumber, "phone": gen_phone, "domain": gen_domain,
        "address": gen_company, "other": gen_account, "path": gen_account}
 
@@ -337,6 +403,48 @@ class Registry:
             self.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (key, kind, p, source, scope))
             return p
 
+    # ------------------------------------------------------------------ identity FIELD values (scope "meta")
+    def _ci_index(self):
+        idx = getattr(self, "_ci", None)
+        if idx is None or getattr(self, "_ci_n", -1) != len(self.map):
+            idx = {}
+            for o in self.map:
+                lo = o.lower()
+                if lo not in idx or self.scope.get(o) == "all":
+                    idx[lo] = o
+            self._ci, self._ci_n = idx, len(self.map)
+        return idx
+
+    def meta_pseudonym(self, value: str) -> str:
+        """Pseudonym for a value found in an identity field of one file (author, last saved by, owner, company, host name, ...).
+        One identity per case-insensitive value: an already registered entry (any scope) wins; otherwise a new collision-free
+        entry of scope 'meta' is created (writable registry) or the deterministic first candidate is returned (read-only)."""
+        key = norm_key(value)
+        if not key:
+            return value
+        lo = key.lower()
+        with self.lock:
+            idx = self._ci_index()
+            hit = idx.get(lo)
+            if hit is not None:
+                return self.map[hit][1] if hit == key else _case_like(self.map[hit][1], key)
+            if self.readonly:
+                return _case_like(gen_meta(self.seed, lo, 0), key)
+            probe = 0
+            while True:
+                p = gen_meta(self.seed, lo, probe)
+                if p.lower() not in self.used and p.lower() != lo and p.lower() not in self._originals_lower and p.lower() not in idx:
+                    break
+                probe += 1
+                if probe > 3000:
+                    return key
+            self.map[lo] = ("meta", p)
+            self.scope[lo] = "meta"
+            self.used.add(p.lower())
+            self._originals_lower.add(lo)
+            self.con.execute("INSERT OR IGNORE INTO identity(original,kind,pseudonym,source,scope) VALUES(?,?,?,?,?)", (lo, "meta", p, "field", "meta"))
+            return _case_like(p, key)
+
     def commit(self):
         if self.con:
             self.con.commit()
@@ -351,7 +459,7 @@ class Registry:
             return 0
         lower_o = {o.lower() for o in self.map}
         bad = [(o, k, self.scope.get(o, "all")) for o, (k, p) in self.map.items()
-               if len(o) != len(p) or (p.lower() in lower_o and p.lower() != o.lower())]
+               if self.scope.get(o) != "meta" and (len(o) != len(p) or (p.lower() in lower_o and p.lower() != o.lower()))]
         for o, k, sc in bad:
             if k == "email":
                 from .ident import add_email
