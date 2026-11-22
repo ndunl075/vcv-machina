@@ -9,7 +9,7 @@ import re
 _LEGAL_CI = {"inc", "incorporated", "llc", "ltd", "limited", "gmbh", "kg", "corp", "corporation", "company", "mfg", "pty", "plc", "sarl", "srl", "spa", "ohg",
              "gbr", "ltda", "bhd", "sdn", "kk", "s.a", "s.a.", "s.r.l", "s.r.l.", "s.p.a", "s.p.a.", "b.v", "b.v.", "n.v", "n.v.", "k.k", "k.k.", "e.v", "e.v.",
              "a/s", "gmbh&co", "kft", "sas", "aktiengesellschaft", "manufacturing", "co.,", "inc.,", "ltd.,"}
-_LEGAL_CS = {"Co", "Co.", "CO", "CO.", "AG", "SA", "AB", "Oy", "OY", "BV", "NV", "AS", "A/S", "Oyj", "LP", "LLP", "PLC"}
+_LEGAL_CS = {"Co", "Co.", "CO", "CO.", "AG", "SA", "AB", "Oy", "OY", "BV", "NV", "A/S", "Oyj", "LP", "LLP", "PLC"}
 _WEAK_CI = {"technologies", "technology", "industries", "systems", "robotics", "electronics", "electric", "instruments", "laboratories", "labs", "optics",
             "photonics", "motors", "controls", "automation", "tooling", "tools", "machinery", "products", "solutions", "plastics", "engineering"}
 _INST = {"university", "universität", "universitat", "université", "universite", "universidad", "università", "universiteit", "universidade", "institute", "institut",
@@ -23,6 +23,7 @@ _LEAD_DROP = {"the", "a", "an", "by", "from", "at", "our", "your", "its", "this"
 _COUNTRY = {"switzerland", "germany", "france", "italy", "spain", "usa", "america", "china", "japan", "india", "england", "canada", "europe", "australia", "uk", "us", "korea",
             "netherlands", "sweden", "norway", "denmark", "finland", "austria", "belgium", "poland", "brazil", "mexico", "russia", "taiwan", "singapore", "ireland", "portugal"}
 _STANDARDS = {"iso", "din", "ansi", "asme", "iec", "jis", "bsi", "astm", "sae", "ieee", "nema", "ul", "csa", "en", "api", "aws", "asm", "nfpa", "ansi/asme", "iso/iec"}
+_FUNC = {"may", "not", "be", "but", "is", "are", "as", "with", "that", "this", "shall", "will", "must", "should", "can", "which", "when", "if", "any", "no", "supplied", "including", "or", "to", "by", "from", "at", "in", "on", "it", "its"}
 _TOK = re.compile(r"[^\s]+")
 _HOLDER_CUT = re.compile(r"(?i)\ball\s+rights|\bunauthori[sz]ed|\bthis\s+(?:document|drawing|file|work|material)|\bis\s+(?:the|a|an)\b|[;|]|\s[-–—]\s|\s{3,}|\bwww\.|https?://|@|\bpage\b|\bplease\b|\bpermission\b|\bcontact\b|\bsee\b")
 _CPY = re.compile(r"(?i)(?:©|\(c\)|\bcopyright\b)[\s:]*(?:\(c\)|©)?[\s:]*(?:(?:19|20)\d{2}(?:\s*[-–,/]\s*(?:19|20)?\d{2,4})*[\s,.:;-]*)*([^\n]{3,100})")
@@ -108,8 +109,7 @@ def _org_in_line(toks: list, out: list):
             kind = "legal"
         elif low in _INST:
             kind = "inst"
-        elif low in _WEAK_CI:
-            kind = "weak"
+        # (product words such as Electric / Systems / Engineering alone are no organisation evidence: too many false hits)
         if kind is None:
             i += 1
             continue
@@ -140,7 +140,7 @@ def _org_in_line(toks: list, out: list):
         s = i
         while s > 0 and i - s < 5:
             pv = toks[s - 1]
-            if s < i and pv.endswith((",", ".", ";", ":", "!")) and not (pv.endswith(".") and len(_strip(pv)) <= 3):
+            if (s < i or kind != "legal") and pv.endswith((",", ".", ";", ":", "!")) and not (pv.endswith(".") and len(_strip(pv)) <= 3):
                 break
             if _is_legal(pv):
                 break
@@ -161,6 +161,10 @@ def _org_in_line(toks: list, out: list):
         else:  # institution: proper words either side
             body = head + toks[j + 2:end]
             ok = bool(body) and not _bad_inst(body) if (head or tail_has_name) else False
+        if ok and any(_strip(w).lower() in _FUNC for w in cand if _strip(w).lower() not in ("of", "for", "and", "&", "und", "de", "der", "di", "von", "zu", "du", "für", "van", "the")):
+            ok = False
+        if ok and (not cand[0][:1].isalnum() or any(c in " ".join(cand) for c in "()[]{}<>/=") and "/" not in " ".join(cand)[:0]):
+            ok = False
         if ok and 2 <= len(cand) <= 9:
             v = " ".join(cand).strip(" ,;:.-")
             v = re.sub(r"\s+,", ",", v)
