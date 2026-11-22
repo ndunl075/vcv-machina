@@ -19,7 +19,7 @@ def say(msg):
 
 
 def shard_rows(sid):
-    plan = json.load(open(os.path.join(HERE, "shards.json")))
+    plan = json.load(open(os.environ.get("SHARDS_JSON") or os.path.join(HERE, "shards.json")))
     man = os.path.join(TMP, "manifest.tsv")
     if not os.path.exists(man):
         shardlib.fetch_manifest(man)
