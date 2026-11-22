@@ -187,6 +187,9 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                         by_stream.setdefault(tuple(sp), []).append((off, nb, kind, txt))
                     m3 = olez.short_matcher(fids.map)
                     file_m = fids.m_all if m3 is None else (m3 if fids.m_all is None else Chain(m3, fids.m_all))
+                    ansi = olez.AnsiMatcher(fids.map)
+                    if ansi:
+                        file_m = ansi if file_m is None else Chain(ansi, file_m)
                     if file_m is not None:
                         ctx.m = Chain(file_m, saved_m)
             # every stream, read once and written once (olefile serves stale mini-stream data after a write):

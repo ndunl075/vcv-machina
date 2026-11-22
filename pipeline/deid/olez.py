@@ -14,7 +14,7 @@ _HDR = re.compile(rb"\x78[\x01\x5e\x9c\xda]")
 MAX_STREAM = 400_000_000
 _PAD_STORED = b"\x00\x00\x00\xff\xff"
 _FINALS = (b"\x03\x00", b"\x01\x00\x00\xff\xff")          # empty final fixed-Huffman block (10 bits) / empty final stored block
-_PARAMS = [(l, m, s) for s in (0, 1) for m in (8, 9, 7, 6) for l in (9, 6, 8, 7, 5, 4, 3, 2, 1)]
+_PARAMS = [(l, m, s) for s in (0, 1) for m in (8, 9, 7, 6) for l in (1, 9, 6, 8, 7, 5, 4, 3, 2)]
 
 
 def find_blocks(d: bytes):
@@ -64,14 +64,93 @@ def _fit_candidates(plain: bytes, total: int):
                 yield full, ad, "exact"
         except zlib.error:
             pass
-        b = len(base)
-        if b in seen:
+        for body in _bases(plain, lvl, mem, strat, base):
+            b = len(body)
+            if b in seen:
+                continue
+            seen.add(b)
+            for fin in _FINALS:
+                g = target - b - len(fin)
+                if g >= 0 and g % 5 == 0:
+                    yield body + _PAD_STORED * (g // 5) + fin, ad, "pad"
+
+
+def _stored_tail(plain, lvl, mem, strat, target):
+    """Fine-grained fit: deflate plain[:n-k] with a sync flush, then a final STORED block carrying the last k plaintext bytes
+    (5 header bytes + k). The size grows with k, so k is found by bisection plus a short local scan."""
+    n = len(plain)
+
+    def build(k):
+        c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+        head = c.compress(plain[:n - k]) + c.flush(zlib.Z_SYNC_FLUSH)
+        tail = plain[n - k:]
+        return head + b"\x01" + struct.pack("<HH", len(tail), len(tail) ^ 0xFFFF) + tail
+    hi = min(n, 65535)
+    if len(build(0)) > target:
+        return
+    lo = 0
+    if len(build(hi)) < target:
+        return
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if len(build(mid)) < target:
+            lo = mid
+        else:
+            hi = mid
+    for k in range(max(0, lo - 6), min(65535, n, hi + 6) + 1):
+        b = build(k)
+        if len(b) == target:
+            yield b
+
+
+def _stored_head(plain, lvl, mem, strat, target):
+    """Fit without a flush cost: a non-final STORED block carrying the first k plaintext bytes (5 + k bytes), then the rest as an
+    ordinary final deflate stream. Size is monotone in k (roughly), so bisection plus a local scan finds the exact length."""
+    n = len(plain)
+
+    def build(k):
+        c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+        rest = c.compress(plain[k:]) + c.flush()
+        return (b"\x00" + struct.pack("<HH", k, k ^ 0xFFFF) + plain[:k] if k else b"") + rest
+    hi = min(n - 1, 65535)
+    if hi < 1 or len(build(0)) > target or len(build(hi)) < target:
+        return
+    lo = 0
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if len(build(mid)) < target:
+            lo = mid
+        else:
+            hi = mid
+    for k in range(max(0, lo - 8), min(65535, n - 1, hi + 8) + 1):
+        b = build(k)
+        if len(b) == target:
+            yield b
+            return
+
+
+def _bases(plain, lvl, mem, strat, first):
+    """Sync-flushed deflate bodies of the same plaintext with different flush points (each changes the size by a few bytes)."""
+    yield first
+    n = len(plain)
+    if n > 3_000_000:
+        return
+    for k in (n // 2, n // 3, 2 * n // 3, n // 4, 3 * n // 4, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987):
+        if not 0 < k < n:
             continue
-        seen.add(b)
-        for fin in _FINALS:
-            g = target - b - len(fin)
-            if g >= 0 and g % 5 == 0:
-                yield base + _PAD_STORED * (g // 5) + fin, ad, "pad"
+        try:
+            c = zlib.compressobj(lvl, zlib.DEFLATED, -15, mem, strat)
+            yield c.compress(plain[:k]) + c.flush(zlib.Z_SYNC_FLUSH) + c.compress(plain[k:]) + c.flush(zlib.Z_SYNC_FLUSH)
+        except zlib.error:
+            continue
+
+
+def _fit_stored_tail(plain, total):
+    ad = struct.pack(">I", zlib.adler32(plain) & 0xFFFFFFFF)
+    for lvl, mem, strat in ((1, 8, 0), (6, 8, 0), (9, 8, 0), (9, 9, 0), (1, 9, 0), (6, 9, 0)):
+        for gen, how in ((_stored_head, "head"), (_stored_tail, "tail")):
+            for body in gen(plain, lvl, mem, strat, total - 6):
+                yield body, ad, how
 
 
 def refit(block: bytes, plain: bytes):
@@ -79,7 +158,8 @@ def refit(block: bytes, plain: bytes):
     if len(block) < 12:
         return None
     hdr = block[:2]
-    for body, ad, how in _fit_candidates(plain, len(block)):
+    import itertools
+    for body, ad, how in itertools.chain(_fit_candidates(plain, len(block)), _fit_stored_tail(plain, len(block))):
         cand = hdr + body + ad
         if len(cand) != len(block):
             continue
@@ -250,3 +330,52 @@ def ascii_tail_pass(fmap, data: bytes):
         out[m.start():m.end()] = (p if t == o else _case_like(p, t)).encode()
         n += 1
     return bytes(out), n
+
+
+_ANSI_ENCODINGS = ("utf-8", "cp1252", "gbk", "big5", "shift_jis", "cp949")
+
+
+class AnsiMatcher:
+    """Field values with non-ASCII characters (accented names) as single-byte ANSI text (cp1252) in binary streams. The registry
+    matcher only patches ASCII / UTF-16 forms. Whole-token rule on ASCII alphanumerics only (high bytes next to a value do not
+    block it: such streams are fixed-size text buffers). Same patches()/replace_bytes() interface as Matcher for OLE use."""
+    _nonascii_keys: list = []
+    _str_keys: list = []
+    str_map: dict = {}
+    max_pat = 1
+
+    def __init__(self, fmap, min_len=4):
+        from .registry import _case_like
+        self.pairs = {}
+        for o, p in fmap.values():
+            if len(o) < min_len or o.isascii() or len(o) != len(p):
+                continue
+            for var in {o, o.lower(), o.upper(), o.title()}:
+                pv = p if var == o else _case_like(p, var)
+                for enc in _ANSI_ENCODINGS:
+                    try:
+                        bo = var.encode(enc)
+                    except UnicodeEncodeError:
+                        continue
+                    br = pv.encode("ascii", "replace")
+                    if len(br) > len(bo) or bo in self.pairs:
+                        continue
+                    self.pairs[bo] = br + b"x" * (len(bo) - len(br))       # multi-byte originals: pad like OleField.fit does
+        self.rx = (re.compile(rb"(?<![A-Za-z0-9])(?:%s)(?![A-Za-z0-9])" % b"|".join(re.escape(k) for k in sorted(self.pairs, key=len, reverse=True)))
+                   if self.pairs else None)
+
+    def __bool__(self):
+        return self.rx is not None
+
+    def patches(self, data):
+        if self.rx is None:
+            return []
+        return [(m.start(), self.pairs[m.group(0)]) for m in self.rx.finditer(data)]
+
+    def replace_bytes(self, data):
+        out = bytearray(data)
+        n = 0
+        for o, r in self.patches(data):
+            out[o:o + len(r)] = r
+            n += 1
+        return (bytes(out), n) if n else (data, 0)
