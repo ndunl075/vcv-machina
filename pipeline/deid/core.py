@@ -200,10 +200,10 @@ def _scan_patches(path: str, size: int, m: Matcher):
     return sorted(set(patches))
 
 
-def apply_one(eng: Engine, rel: str):
-    """Returns (out_rel, handler, status, nrep, note)."""
-    src = os.path.join(INPUT, rel)
-    orel = eng.out_rel(rel)
+def apply_one(eng: Engine, rel: str, src: str | None = None, orel_override: str | None = None):
+    """Returns (out_rel, handler, status, nrep, note, trace). src / orel_override serve files that cannot live under their own name."""
+    src = src or os.path.join(INPUT, rel)
+    orel = orel_override or eng.out_rel(rel)
     dst = os.path.join(OUT, orel)
     eng.ctx_notes.clear()
     eng.ctx.trace.clear()
