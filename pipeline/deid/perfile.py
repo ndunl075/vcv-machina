@@ -81,6 +81,8 @@ def text_candidates(text: str) -> list:
     cands: list = []
     try:
         harvest.generic_text_candidates(text, cands)
+        from . import orgs
+        cands += orgs.candidates(text)
         for n in names.find_person_names(text):
             cands.append(("person", n))
         for d in detect.find_domains(text):       # bare host names ('example.org/wiki'): common registries only, label of 4+ letters

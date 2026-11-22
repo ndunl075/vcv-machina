@@ -148,7 +148,46 @@ def gen_person(seed, orig, probe=0):
     return _digits_tail(s, st, probe) if probe else s
 
 
+_KEEP = {"inc", "inc.", "llc", "ltd", "ltd.", "limited", "gmbh", "kg", "corp", "corp.", "corporation", "company", "mfg", "mfg.", "co", "co.", "ag", "sa", "s.a.", "s.a", "srl",
+         "s.r.l.", "spa", "s.p.a.", "bv", "b.v.", "nv", "n.v.", "pty", "plc", "oy", "ab", "a/s", "bhd", "sdn", "k.k.", "kk", "sarl", "sas", "ohg", "ltda", "&", "and", "und", "of", "for",
+         "de", "der", "di", "von", "zu", "du", "für", "van", "university", "universität", "universitat", "université", "universite", "universidad", "università", "universiteit",
+         "institute", "institut", "instituto", "istituto", "college", "laboratory", "laboratories", "laboratorium", "laboratoire", "academy", "hochschule", "polytechnic", "akademie",
+         "research", "center", "centre", "electric", "technologies", "technology", "industries", "systems", "engineering", "instruments", "labs", "optics", "automation", "tooling", "e.v.", "kft"}
+
+
+def gen_org(seed, orig, probe=0):
+    """Company-like pseudonym with the legal form / institution words of the original kept and every other alphabetic run replaced by a name-like
+    word of exactly the same length (case style kept)."""
+    h = _h(seed, "org", orig.lower())
+    out, last, idx = [], 0, 0
+    for m in re.finditer(r"[^\W\d_]+", orig):
+        out.append(orig[last:m.start()])
+        w = m.group(0)
+        last = m.end()
+        if w.lower() in _KEEP:
+            out.append(w); continue
+        L = len(w)
+        names = _names_of_len(L)
+        if L >= 3 and names:
+            r = names[(h >> (idx * 3) + probe * 7919 + idx * 31) % len(names)] if False else names[(h // (7 ** idx) + probe * 7919 + idx * 101) % len(names)]
+        else:
+            r = "".join(chr(97 + (h >> (idx * 5 + k * 3)) % 26) for k in range(L))
+        if w.isupper() and L > 1:
+            r = r.upper()
+        elif w.islower():
+            r = r.lower()
+        else:
+            r = r[:1].upper() + r[1:].lower()
+        out.append(r)
+        idx += 1
+    out.append(orig[last:])
+    s = "".join(out)
+    return s if s.lower() != orig.lower() else gen_org(seed, orig, probe + 1000)
+
+
 def gen_company(seed, orig, probe=0):
+    if any(t.lower().strip(",()") in _KEEP for t in orig.split()) and len(orig.split()) >= 2:
+        return gen_org(seed, orig, probe)
     n = len(orig)
     h = _h(seed, "company", orig.lower())
     s = _pick(_company_index(), n, h, probe)

@@ -27,6 +27,10 @@ def _variants(orig: str, pseudo: str):
     yield from add(orig, pseudo)
     yield from add(orig.lower(), pseudo.lower())
     yield from add(orig.upper(), pseudo.upper())
+    if " " in orig:
+        yield from add(orig.replace(" ", "\u00a0"), pseudo.replace(" ", "\u00a0"))      # no-break spaces inside a name
+    if orig.title() != orig and len(orig.title()) == len(orig) and not any(c.isdigit() for c in orig):
+        yield from add(orig.title(), pseudo.title())
     if re.search(r"[-_ ]", orig):
         for sep in "-_ ":
             o2 = re.sub(r"[-_ ]", sep, orig)

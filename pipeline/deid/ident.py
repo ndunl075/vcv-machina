@@ -60,7 +60,7 @@ def strict_ok(kind: str, v: str, label: bool = False) -> bool:
             _gaz = (*gazetteer(), STOP, ALL_LABELS, _PERSON_BAD)
         F, L, STOP, LABELS, BAD = _gaz
         low = [w.lower().strip(".,'-") for w in words]
-        if any(w in STOP or w in LABELS or w in BAD or w in VENDOR_TOKENS or w in _PERSON_REJECT for w in low):
+        if any(w in STOP or w in LABELS or w in BAD or w in _PERSON_REJECT for w in low):
             return False
         d = english_words()
         if low[0] in F and low[-1] in L:
@@ -71,18 +71,16 @@ def strict_ok(kind: str, v: str, label: bool = False) -> bool:
     if kind in ("company", "org"):
         low = [t.lower().strip(",()") for t in toks]
         d = english_words()
-        if label and any(t in VENDOR_TOKENS for t in low) is False and not all(t in d or t in _COUNTRIES for t in low):
-            return True
-        if not any(t in _LEGAL or t.strip(".") in _LEGAL for t in low):
+        from . import orgs
+        if label:
+            if any(t in orgs._STANDARDS or t in ("standards", "standard", "normung") for t in low):
+                return False
+            return not all(t in d or t in _COUNTRIES for t in low) or len(low) >= 3 and any(t in _LEGAL for t in low)
+        if any(t in orgs._STANDARDS or t in ("standards", "standard", "normung") for t in low):
             return False
-        if any(t in VENDOR_TOKENS for t in low):
-            return False
-        other = [t for t in low if t not in _LEGAL and t.strip(".") not in _LEGAL and t not in ("of", "the", "for", "und", "and", "&", "de", "der", "für")]
-        if not other or all(t in d or t in _LEGAL or len(t) < 2 for t in other):
-            return False
-        if all(t in _COUNTRIES or t in d for t in other) or any(t in ("standards", "standard", "standardization") for t in other):
-            return False
-        return True
+        # a legal form / institution word with a proper name in front (orgs.py is the single definition)
+        return any(c[1] == v for c in orgs.org_candidates(v)) or any(c[1] == " ".join(toks) for c in orgs.org_candidates(" ".join(toks)))
+    return True
     return True
 
 
