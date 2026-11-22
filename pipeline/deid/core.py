@@ -187,11 +187,20 @@ class Engine:
         self.cm = Matcher([x for x in allid if x[0].lower() not in NEVER_IN_CONTENT] + extra, min_len=4)
         self.ctx_notes: list = []
         # identities found only in the visible text of PDFs (scope "pdf"): replaced inside PDFs only, never in paths or other formats
+        from .fields import content_safe
+        from .registry import _case_like
         pdfid = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "pdf"]
         pextra = []
+        for o in self.reg.map:          # field-level (meta) identities, stored lower-case: also their Capitalised / Title spellings in PDF text
+            if self.reg.scope.get(o) == "meta" and content_safe(o):
+                p_ = self.reg.map[o][1]
+                pdfid.append((o, p_))
+                for v in (o.title(), o.capitalize()):
+                    if v != o:
+                        pextra.append((v, _case_like(p_, v)))
         for o, p_ in pdfid:
             a, b = o.split(" "), p_.split(" ")
-            if self.reg.map[o][0] == "person" and len(a) == 2 and len(b) == 2 and all(a) and all(b):
+            if self.reg.map[o][0] in ("person", "meta") and self.reg.scope.get(o) == "pdf" and len(a) == 2 and len(b) == 2 and all(a) and all(b):
                 pextra += [(f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"), (f"{a[1]} {a[0]}", f"{b[1]} {b[0]}")]
         self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes, reg=self.reg)
         self.ctx.pdfm = Matcher(pdfid + pextra, min_len=4) if pdfid else None

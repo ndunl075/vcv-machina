@@ -292,7 +292,7 @@ def gen_meta(seed, orig, probe=0):
     n = len(orig)
     h = _h(seed, "meta", orig.lower())
     st = _stream(seed, "meta", orig.lower(), str(probe))
-    if n == 0 or not _ALNUM.search(orig) or probe > 5000:
+    if n == 0 or not any(ch.isalnum() for ch in orig) or probe > 5000:
         return orig
     if " " in orig and re.fullmatch(r"[A-Za-z][A-Za-z .'\-]+", orig) and len(orig) >= 5:
         return gen_person(seed, orig.lower().title() if orig.islower() or orig.isupper() else orig, probe).lower() if orig.islower() else (
@@ -399,7 +399,7 @@ class Registry:
         """Pseudonym of an unregistered identity: pure function of (seed, kind, key) and the registry contents (the first candidate that is
         neither a used pseudonym nor a registered original). No per-file or per-order state, so every file and slice agrees."""
         lo = key.lower()
-        if not _ALNUM.search(key):
+        if not any(ch.isalnum() for ch in key):
             return key                                   # separators only: nothing to hide
         group = kind if kind in ("domain", "phone", "partnumber") else "meta"
         ck = (group, key if group == "partnumber" else lo)

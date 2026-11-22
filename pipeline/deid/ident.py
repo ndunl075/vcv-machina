@@ -41,7 +41,7 @@ def _public_host(d: str) -> bool:
     return d in PUBLIC_DOMAINS or d.endswith(PUBLIC_SUFFIXES) or any(d.endswith("." + x) for x in ("google.com", "google.com.mx", "microsoft.com", "wikipedia.org"))
 
 
-def strict_ok(kind: str, v: str) -> bool:
+def strict_ok(kind: str, v: str, label: bool = False) -> bool:
     """Precision guards for identities found only in a file's visible text (weak detectors)."""
     global _gaz
     if kind in ("project", "address"):
@@ -62,19 +62,21 @@ def strict_ok(kind: str, v: str) -> bool:
         low = [w.lower().strip(".,'-") for w in words]
         if any(w in STOP or w in LABELS or w in BAD or w in VENDOR_TOKENS or w in _PERSON_REJECT for w in low):
             return False
-        if not any(w in F or w in L for w in low):
-            return False
         d = english_words()
-        if all(w in d for w in low):
-            return False
-        return True
+        if low[0] in F and low[-1] in L:
+            return True
+        if any(w in F or w in L for w in low) and not all(w in d for w in low):
+            return True
+        return label and not all(w in d for w in low)
     if kind in ("company", "org"):
         low = [t.lower().strip(",()") for t in toks]
+        d = english_words()
+        if label and any(t in VENDOR_TOKENS for t in low) is False and not all(t in d or t in _COUNTRIES for t in low):
+            return True
         if not any(t in _LEGAL or t.strip(".") in _LEGAL for t in low):
             return False
         if any(t in VENDOR_TOKENS for t in low):
             return False
-        d = english_words()
         other = [t for t in low if t not in _LEGAL and t.strip(".") not in _LEGAL and t not in ("of", "the", "for", "und", "and", "&", "de", "der", "für")]
         if not other or all(t in d or t in _LEGAL or len(t) < 2 for t in other):
             return False
@@ -195,7 +197,7 @@ def register_candidates(reg: Registry, cands: list[tuple], source: str = "", str
         v = v.strip().strip("'\"").strip()
         if not v or len(v) < 3 or len(v) > 90 or not plausible(kind, v):
             continue
-        if strict and not strict_ok(kind, v):
+        if strict and not strict_ok(kind, v, len(c) > 2 and c[2] == "label"):
             continue
         if kind == "email":
             local, _, dom = v.partition("@")

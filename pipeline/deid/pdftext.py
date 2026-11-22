@@ -321,7 +321,7 @@ def labelled_fields(spans, out: list):
                 m = re.fullmatch(r"[A-Z]\.\s?([A-Z][a-zà-ÿ]{5,})", val)
                 if m:
                     out.append(("person", m.group(1)))
-            out.append((k, val))
+            out.append((k, val, "label"))      # picked from a title-block label: ident.strict_ok accepts it on weaker evidence
 
 
 # ------------------------------------------------------------------------------------------------ text patterns
@@ -468,11 +468,14 @@ def contact_patterns(text: str, out: list):
     if "@" in text:
         for l, d in detect.find_emails(text):
             out.append(("email", f"{l}@{d}"))
+    mail_doms = {d.lower() for _, d in detect.find_emails(text)} if "@" in text else set()
     for m in _BARE_DOMAIN.finditer(text):
         d = m.group(1)
+        if d.lower().startswith("www."):
+            d = d[4:]
         label = d.split(".")[0].lower()
         if len(label) >= 4 and label not in STOP and not re.search(r"\d{4,}", d):
-            if len(d.rsplit(".", 1)[-1]) == 2 and not (d.lower().startswith("www.") or text[max(0, m.start() - 8): m.start()].lower().rstrip().endswith(("http://", "https://", "//"))):
+            if len(d.rsplit(".", 1)[-1]) == 2 and not (m.group(1).lower().startswith("www.") or d.lower() in mail_doms or text[max(0, m.start() - 8): m.start()].lower().rstrip().endswith(("http://", "https://", "//"))):
                 continue          # country-code TLD only with www. / http: otherwise it is a missing space in prose ('use.it')
             out.append(("domain", d.lower()))
     for m in _INTL_PHONE.finditer(text):

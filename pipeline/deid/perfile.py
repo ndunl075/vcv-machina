@@ -88,9 +88,11 @@ def text_candidates(text: str) -> list:
             tld = dl.rsplit(".", 1)[-1]
             lab = dl.split(".")[-2] if "." in dl else ""
             if tld in _BARE_TLDS and len(lab) >= 4 and re.search(r"[a-z]{3}", lab):
-                if len(tld) == 2 and not re.search(r"(?:www\.|https?://)" + re.escape(d), text, re.I):
+                bare = d[4:] if dl.startswith("www.") else d
+                if len(tld) == 2 and not (dl.startswith("www.") or re.search(r"https?://(?:www\.)?" + re.escape(bare), text, re.I)
+                                          or re.search(r"@" + re.escape(bare), text, re.I)):
                     continue          # 'use.it' in prose without a missing space
-                cands.append(("domain", d))
+                cands.append(("domain", bare))
     except Exception:
         return []
     return cands
