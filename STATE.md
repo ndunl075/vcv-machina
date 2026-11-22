@@ -1,3 +1,4 @@
+# att4 recall round: orgs.py + holders, registry 4,831 -> 6,850; an2 org ALL-left 44->19, copyright ALL-left 22->16 (fix1 -> att4)
 # att4 round 2: text-only discoveries use scope "pdf" (PDF-only matcher in Engine.ctx.pdfm), strict_ok guards in ident.py (person/company/phone/domain; project+address dropped),
 # registry re-harvested from the ORIGINAL registry: 4,831 -> 6,044 identities. Sample: PDF fields all changed 180/186, OLE 139/142 (was 183/142 before this round).
 # att4 round 3: registry re-harvested again (4,831 -> 6,329); sample fields all changed PDF 183/186, OLE 142/142; leaks 8 PDF content, 1 path.
