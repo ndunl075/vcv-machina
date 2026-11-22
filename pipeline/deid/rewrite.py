@@ -162,9 +162,11 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
     import olefile
     from . import fields, perfile
     from .matcher import Chain
+    from . import olez
     # Streams can be split over sectors, so always go stream by stream.
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ole")
     saved_m = ctx.m
+    file_m = None            # per-file matcher (field values) for the container-level passes
     try:
         tmp.write(data); tmp.close()
         ole = olefile.OleFileIO(tmp.name, write_mode=True)
@@ -183,8 +185,10 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                 if fids:
                     for sp, off, nb, kind, txt in slots:
                         by_stream.setdefault(tuple(sp), []).append((off, nb, kind, txt))
-                    if fids.m_all is not None:
-                        ctx.m = Chain(fids.m_all, saved_m)
+                    m3 = olez.short_matcher(fids.map)
+                    file_m = fids.m_all if m3 is None else (m3 if fids.m_all is None else Chain(m3, fids.m_all))
+                    if file_m is not None:
+                        ctx.m = Chain(file_m, saved_m)
             # every stream, read once and written once (olefile serves stale mini-stream data after a write):
             # field values first, then registry identities + the specific field values of this file
             for sp in ole.listdir(streams=True, storages=False):
@@ -200,7 +204,26 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
                     if n:
                         buf[off:off + nb] = fids.fit(new, nb, kind == "w")
                         ctx.t("ole-field", n)
-                nst, n = ctx.m.replace_bytes(bytes(buf))
+                spans = []
+                if sp[-1][:1] != "\x05":
+                    # zlib blocks: inflate, replace, deflate again into exactly the same span (olez.py)
+                    try:
+                        zb, zst, spans = olez.rewrite_blocks(bytes(buf), ctx.m)
+                    except Exception:
+                        zb, zst, spans = bytes(buf), {}, []
+                        ctx.t("ole-zblock-exception")
+                    if len(zb) == len(buf):
+                        buf = bytearray(zb)
+                    for k, lab in (("rewritten", "ole-zblock-rewritten"), ("nofit", "ole-zblock-nofit"), ("failed", "ole-zblock-failed"),
+                                   ("padded", "ole-zblock-padded")):
+                        ctx.t(lab, zst.get(k, 0))
+                if spans:
+                    nst, n = olez.apply_patches_outside(ctx.m, bytes(buf), spans)     # never patch inside compressed bytes
+                else:
+                    nst, n = ctx.m.replace_bytes(bytes(buf))
+                if fids and sp[-1].startswith("ISolidWorksInformation"):
+                    nst, n3 = olez.ascii_tail_pass(fids.map, nst)
+                    n += n3
                 ctx.t("ole-stream:" + sp[-1][:28], n)
                 if nst != st and len(nst) == len(st):
                     ole.write_stream(sp, nst)
@@ -218,6 +241,15 @@ def do_ole(ctx: Ctx, name: str, data: bytes):
         out = out2
         changed += n2
         ctx.t("ole-outside-streams", n2)
+    if file_m is not None:       # the per-file field values in free sectors / slack / directory bytes (never inside stream data)
+        try:
+            out3, n3 = olez.patch_unowned(file_m, out)
+        except Exception:
+            out3, n3 = out, 0
+        if n3 and len(out3) == len(out):
+            out = out3
+            changed += n3
+            ctx.t("ole-outside-streams-file", n3)
     return out if changed else None
 
 
