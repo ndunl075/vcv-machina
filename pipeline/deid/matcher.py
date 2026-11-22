@@ -37,7 +37,7 @@ def _variants(orig: str, pseudo: str):
 
 
 class Matcher:
-    def __init__(self, items, min_len=4, boundary_len=7):
+    def __init__(self, items, min_len=4, boundary_len=7, boundary_all=False):
         """items: iterable of (original, pseudonym). Originals shorter than min_len are ignored. Originals shorter than
         boundary_len only match as whole tokens (neighbours not alphanumeric)."""
         self.pats8: list[bytes] = []
@@ -51,7 +51,7 @@ class Matcher:
         for o, p in items:
             if len(o) < min_len or o == p:
                 continue
-            nb_o = not distinctive(o)
+            nb_o = True if boundary_all else not distinctive(o)
             for ov, pv in _variants(o, p):
                 nb = nb_o
                 try:

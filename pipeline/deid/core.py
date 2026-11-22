@@ -191,19 +191,44 @@ class Engine:
         from .registry import _case_like
         pdfid = [(o, self.reg.map[o][1]) for o in self.reg.map if self.reg.scope.get(o) == "pdf"]
         pextra = []
-        for o in self.reg.map:          # field-level (meta) identities, stored lower-case: also their Capitalised / Title spellings in PDF text
-            if self.reg.scope.get(o) == "meta" and content_safe(o):
-                p_ = self.reg.map[o][1]
-                pdfid.append((o, p_))
-                for v in (o.title(), o.capitalize()):
-                    if v != o:
-                        pextra.append((v, _case_like(p_, v)))
+        metaid = self.admitted_meta(self.reg)
         for o, p_ in pdfid:
             a, b = o.split(" "), p_.split(" ")
             if self.reg.map[o][0] in ("person", "meta") and self.reg.scope.get(o) == "pdf" and len(a) == 2 and len(b) == 2 and all(a) and all(b):
                 pextra += [(f"{a[1]}, {a[0]}", f"{b[1]}, {b[0]}"), (f"{a[1]} {a[0]}", f"{b[1]} {b[0]}")]
         self.ctx = rewrite.Ctx(self.cm, self.pm, self.ctx_notes, reg=self.reg)
-        self.ctx.pdfm = Matcher(pdfid + pextra, min_len=4) if pdfid else None
+        pm1 = Matcher(pdfid + pextra, min_len=4) if (pdfid or pextra) else None
+        pm2 = Matcher(metaid, min_len=4, boundary_all=True) if metaid else None       # token boundaries only
+        from .matcher import Chain
+        self.ctx.pdfm = Chain(pm1, pm2) if pm1 and pm2 else (pm1 or pm2)
+        self.n_meta_admitted = len(metaid) // 3
+
+    @staticmethod
+    def admitted_meta(reg):
+        """(original, pseudonym) variants of the field-level (meta) identities that may be replaced in the text of ANY pdf: multi-token person /
+        company names, and single distinctive surname / account-like words (no digits, no dictionary, vendor, generic or first names)."""
+        from . import ident
+        from .fields import GENERIC_CONTENT
+        from .registry import _case_like
+        from .names import gazetteer
+        F, L = gazetteer()
+        d = ident.english_words()
+        out = []
+        for o in reg.map:
+            if reg.scope.get(o) != "meta":
+                continue
+            toks = o.split()
+            ok = False
+            if len(toks) >= 2:
+                ok = ident.strict_ok("person", o.title()) or ident.strict_ok("company", o.title())
+            elif o.isalpha() and len(o) >= 5 and o.lower() not in d and o.lower() not in ident.VENDOR_TOKENS and o.lower() not in GENERIC_CONTENT \
+                    and o.lower() not in F and (o.lower() in L or len(o) >= 6):
+                ok = True
+            if ok:
+                p_ = reg.map[o][1]
+                out.append((o, p_))
+                out += [(o.title(), _case_like(p_, o.title())), (o.upper(), p_.upper())]
+        return out
 
     def out_rel(self, rel: str) -> str:
         comps = rel.split("/")

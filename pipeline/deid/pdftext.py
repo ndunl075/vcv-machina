@@ -457,7 +457,7 @@ def notice_holders(text: str, out: list):
             out.append(("company", h))
 
 
-_BARE_DOMAIN = re.compile(r"(?<![\w@./-])((?:[A-Za-z0-9][A-Za-z0-9-]{2,}\.)+(?:com|net|org|edu|de|fr|nl|ch|co\.uk|ac\.uk|io|info|eu|it|es|se|dk|no|fi|pl|cz|at|be))(?![\w@-])", re.I)
+_BARE_DOMAIN = re.compile(r"(?<![\w.-])((?:[A-Za-z0-9][A-Za-z0-9-]{2,}\.)+(?:com|net|org|edu|de|fr|nl|ch|co\.uk|ac\.uk|io|info|eu|it|es|se|dk|no|fi|pl|cz|at|be))(?![\w@-])", re.I)
 _INTL_PHONE = re.compile(r"(?<![\w.])(\+\d{1,3}[ -]?\(?\d{1,4}\)?(?:[ -]\d{2,5}){2,4})(?![\d.])")
 _US_PHONE = re.compile(r"(?<![\w.])(\(\d{3}\)\s?\d{3}[-.\s]\d{4})(?![\d])")
 _STREET_EN = re.compile(r"\b(\d{1,5}\s+(?:[A-Z][a-z]+\s+){1,3}(?:Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Drive|Lane|Way|Court|Parkway))\b\.?")
