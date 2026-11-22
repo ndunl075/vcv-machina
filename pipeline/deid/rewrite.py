@@ -373,7 +373,7 @@ def _pdf_visible_fixup(ctx: Ctx, data: bytes, name: str, orig_changed: bool):
                 ctx.notes.append("pdf-visible-scan-capped")
                 break
             txt = page.get_text()
-            hits = ctx.m.find_str(txt)
+            hits = ctx.m.find_str(txt) + [(k, ctx.m.str_map[k]) for k in ctx.m._nonascii_keys if k in txt]   # non-ASCII originals (accented names) are not in the byte automaton
             if not hits:
                 continue
             seen = set()
